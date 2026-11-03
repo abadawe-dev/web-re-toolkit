@@ -433,7 +433,17 @@
               set: prop.set
                 ? function (value) {
                     var implementation = behaviour["set " + member];
-                    if (implementation) implementation.call(this, value);
+                    if (implementation) return implementation.call(this, value);
+                    // An event handler attribute (onload, onmessage, ...) holds what it is given,
+                    // per object, as a browser's does: a function or object, else null.
+                    if (key.length > 2 && key.charCodeAt(0) === 111 && key.charCodeAt(1) === 110 && this !== null && (typeof this === "object" || typeof this === "function")) {
+                      var own = overrides.get(this);
+                      if (!own) {
+                        own = {};
+                        overrides.set(this, own);
+                      }
+                      own[key] = value !== null && (typeof value === "function" || typeof value === "object") ? value : null;
+                    }
                   }
                 : undefined,
               enumerable: Boolean(prop.e),

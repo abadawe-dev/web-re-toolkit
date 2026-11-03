@@ -326,6 +326,7 @@ impl Profile {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
 
     #[test]
     fn the_default_profile_validates_and_carries_the_three_interfaces() {

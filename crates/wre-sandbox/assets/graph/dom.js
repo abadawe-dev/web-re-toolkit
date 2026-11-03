@@ -464,23 +464,32 @@
     } catch (error) {}
   }
 
+  // Timer id -> its callback, or for setTimeout/setInterval { callback, every, extra } (`every`,
+  // an interval's period, makes it fire again until cleared).
   var timers = new Map();
   var nextTimer = 1;
 
-  var schedule = function (label, callback, delay, extra) {
+  // A timer's delay as a browser reads it: converted to a number, never negative.
+  var delayOf = function (delay) {
+    var ms = Number(delay);
+    return isFinite(ms) && ms > 0 ? ms : 0;
+  };
+
+  var schedule = function (label, callback, delay, extra, repeat) {
     var id = nextTimer++;
+    var wait = delayOf(delay);
     env.count(label + ":" + String(typeof delay === "number" ? delay : 0));
-    timers.set(id, callback);
-    bridge.schedule(id, typeof delay === "number" ? delay : 0, extra);
+    timers.set(id, { callback: callback, every: repeat ? Math.max(wait, 1) : undefined, extra: extra });
+    bridge.schedule(id, wait, extra);
     return id;
   };
 
   globalThis.setTimeout = asNative(function setTimeout(callback, delay) {
-    return schedule("setTimeout", callback, delay, Array.prototype.slice.call(arguments, 2));
+    return schedule("setTimeout", callback, delay, Array.prototype.slice.call(arguments, 2), false);
   }, "setTimeout");
 
   globalThis.setInterval = asNative(function setInterval(callback, delay) {
-    return schedule("setInterval", callback, delay, Array.prototype.slice.call(arguments, 2));
+    return schedule("setInterval", callback, delay, Array.prototype.slice.call(arguments, 2), true);
   }, "setInterval");
 
   globalThis.clearTimeout = asNative(function clearTimeout(id) {
@@ -588,9 +597,13 @@
   }, "queueMicrotask");
 
   env.fire = function (id, extra) {
-    var callback = timers.get(id);
-    if (!callback) return false;
-    timers.delete(id);
+    var entry = timers.get(id);
+    if (!entry) return false;
+    var callback = typeof entry === "function" ? entry : entry.callback;
+
+    // An interval goes round again before its callback runs, so the callback can clear it.
+    if (typeof entry !== "function" && entry.every !== undefined) bridge.schedule(id, entry.every, entry.extra);
+    else timers.delete(id);
 
     if (typeof callback === "function") callback.apply(null, extra || []);
     return true;
@@ -684,6 +697,9 @@
     event.stopImmediatePropagation = function () {};
     return event;
   };
+
+  // A frame's document finished loading: its window hears "load" before the iframe element does.
+  env.fireLoad = function () { dispatch(globalThis, makeEvent("load")); };
 
   env.makeEvent = makeEvent;
 
@@ -1459,9 +1475,22 @@
       if (!text || typeof bridge.runInFrame !== "function") return;
 
       record("frameLoad", { url: absolute, status: status, bytes: text.length });
+      if (typeof bridge.relocateFrame === "function") bridge.relocateFrame(view, absolute);
 
       var pattern = /<script([^>]*)>([\s\S]*?)<\/script>/gi;
       var found;
+      // Scripts still loading; once none is, the document has loaded and the iframe says so.
+      var loading = 1;
+      var loaded = function () {
+        loading -= 1;
+        if (loading !== 0) return;
+        env.later(function () {
+          // An iframe taken out before its document loaded never says it loaded.
+          if (nodeState(element).frame !== view || !connected(element)) return;
+          if (typeof bridge.frameLoaded === "function") bridge.frameLoaded(view);
+          dispatch(element, makeEvent("load"));
+        }, 0);
+      };
 
       while ((found = pattern.exec(text))) {
         var attributes = found[1] || "";
@@ -1482,11 +1511,15 @@
             return;
           }
 
+          loading += 1;
           bridge.request("GET", target, JSON.stringify({ accept: "*/*", referer: absolute }), null, function (childStatus, childHeaders, childText) {
             if (childText) bridge.runInFrame(view, childText, target, false);
+            loaded();
           });
         })(srcMatch[1]);
       }
+
+      loaded();
     });
   };
 
@@ -1511,8 +1544,9 @@
     for (var at = 0; at < childFrames.length; at += 1) {
       if (childFrames[at].element !== element) continue;
 
-      childFrames.splice(at, 1);
+      var released = childFrames.splice(at, 1)[0];
       if (state) state.frame = undefined;
+      if (typeof bridge.releaseFrame === "function") bridge.releaseFrame(released.view);
       syncFrames();
       return;
     }
@@ -2330,6 +2364,18 @@
       })(documentKeys[d]);
     }
 
+    // A frame starts on about:blank; when it navigates, its location and document take the URL
+    // of the document it loaded, as a browser's do.
+    env.relocate = function (href) {
+      var next = parseUrl(String(href));
+      var keys = Object.keys(next);
+      for (var r = 0; r < keys.length; r += 1) parsedUrl[keys[r]] = next[keys[r]];
+      documentValues.URL = next.href;
+      documentValues.documentURI = next.href;
+      documentValues.baseURI = next.href;
+      documentValues.domain = next.hostname;
+    };
+
     try {
       env.cookies = function () { return cookie; };
 
@@ -2999,6 +3045,10 @@
 
   if (performancePrototype) {
     patch(performancePrototype, "now", function now() { return env.clock(); });
+    // The page's time origin is the moment its clock started, on the same timeline as Date (as in
+    // a browser, timeOrigin + now() reads the wall clock); the captured one is hours stale.
+    var timeOrigin = Date.now() - env.clock();
+    patchGetter(performancePrototype, "timeOrigin", function () { return timeOrigin; });
     patch(performancePrototype, "getEntriesByType", function getEntriesByType(type) { return JSON.parse(bridge.entries(String(type))); });
     patch(performancePrototype, "getEntriesByName", function getEntriesByName() { return []; });
     patch(performancePrototype, "getEntries", function getEntries() { return JSON.parse(bridge.entries("navigation")); });
@@ -4495,7 +4545,10 @@
     record("postMessage", { message: typeof message === "string" ? message : "[object]", origin: origin });
 
     try {
-      if (parent !== globalThis && bridge.deliverMessage) bridge.deliverMessage(parent, message, String(origin ?? "*"), globalThis);
+      // A frame's message goes to the window embedding it, from this frame's origin, with this
+      // frame's window as its source.
+      if (parent !== globalThis && typeof env.toEmbedder === "function") env.toEmbedder(message, globalThis.location.origin, globalThis);
+      else if (parent !== globalThis && bridge.deliverMessage) bridge.deliverMessage(parent, message, String(origin ?? "*"), globalThis);
     } catch (error) {}
   });
 
@@ -4627,6 +4680,13 @@
       record("messageError", { message: String(error && error.message) });
     }
   };
+
+  // Messages the frames this window embeds post to it arrive as a task of its own, as in a browser.
+  if (typeof bridge.adoptFrames === "function") {
+    bridge.adoptFrames(function (message, origin, source) {
+      env.later(function () { env.deliverMessage(message, origin, source); }, 0);
+    });
+  }
 
   var mediaNumber = function (name) {
     var dpr = Number(globalThis.devicePixelRatio) || 1;

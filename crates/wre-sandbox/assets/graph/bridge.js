@@ -12,7 +12,10 @@
   var page = hostPage();
   var timers = [];
   var deferred = [];
-  var MAX_DELAY = 5000;
+  // The longest delay a timer keeps, as Chrome's (a signed 32-bit count of ms); longer ones
+  // overflow and run at once. A page that lives for hours schedules work hours away (Kasada's
+  // loader renews its clearance a day out), so nothing shorter may stand in for it.
+  var MAX_DELAY = 2147483647;
 
   var spare = [];
   var frames = new Map();
@@ -39,7 +42,7 @@
   var schedule = function (id, delay, extra) {
     var wait = typeof delay === "number" && isFinite(delay) ? delay : 0;
     if (wait < 0) wait = 0;
-    if (wait > MAX_DELAY) wait = MAX_DELAY;
+    if (wait > MAX_DELAY) wait = 1;
     timers.push({ id: id, due: hostNow() + wait, extra: extra || [] });
   };
 
@@ -225,6 +228,31 @@
       } finally {
         held.env.endScript();
       }
+    },
+
+    frameLoaded: function (view) {
+      var held = frames.get(view);
+      if (held && typeof held.env.fireLoad === "function") held.env.fireLoad();
+    },
+
+    relocateFrame: function (view, href) {
+      var held = frames.get(view);
+      if (held && typeof held.env.relocate === "function") held.env.relocate(String(href));
+    },
+
+    // An iframe taken out of the document gives its child realm back for the next one, back on
+    // about:blank, so a page that keeps opening frames (Kasada's loader refreshing) never runs out.
+    releaseFrame: function (view) {
+      var held = frames.get(view);
+      if (!held) return;
+      frames.delete(view);
+      if (typeof held.env.relocate === "function") held.env.relocate("about:blank");
+      spare.push(held);
+    },
+
+    adoptFrames: function (deliver) {
+      spare.forEach(function (held) { held.env.toEmbedder = deliver; });
+      frames.forEach(function (held) { held.env.toEmbedder = deliver; });
     },
 
     deliverMessage: function (view, message, origin, source) {
