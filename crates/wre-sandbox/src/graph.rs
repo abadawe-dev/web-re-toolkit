@@ -175,7 +175,8 @@ impl GraphProfile {
         Ok(profile)
     }
 
-    fn parse(raw: &[u8]) -> Result<Self> {
+    /// A profile from its JSON, gzipped or not, as `wre sandbox capture --graph` stores it.
+    pub fn parse(raw: &[u8]) -> Result<Self> {
         let text = if raw.starts_with(&[0x1f, 0x8b]) {
             let mut decoded = String::new();
             GzDecoder::new(raw)

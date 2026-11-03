@@ -489,6 +489,11 @@ pub enum SandboxCommand {
         open: bool,
         #[arg(
             long,
+            help = "have the page send its profile on its own, for a browser opened by hand (implied by --open)"
+        )]
+        auto: bool,
+        #[arg(
+            long,
             help = "walk the whole object graph, for targets that enumerate the surface"
         )]
         graph: bool,

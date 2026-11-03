@@ -63,6 +63,8 @@
 </main>
 
 <script>
+const capturedSettings = window.__wreCapture || {};
+delete window.__wreCapture;
 (function () {
   var snapshotText = null;
   var snapshotFailure = null;
@@ -1949,7 +1951,7 @@
       fmt(JSON.stringify(record).length) + " total");
 
     const settings = new URLSearchParams(location.search);
-    const injected = window.__wreCapture || {};
+    const injected = capturedSettings;
 
     if (settings.has("auto") || injected.auto) {
       const label = settings.get("label") || injected.label || "";

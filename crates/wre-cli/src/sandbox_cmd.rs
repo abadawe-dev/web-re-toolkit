@@ -391,6 +391,7 @@ pub async fn run(context: &Context, command: SandboxCommand) -> Result<()> {
             host,
             port,
             open,
+            auto,
             graph,
             calls,
             label,
@@ -412,7 +413,7 @@ pub async fn run(context: &Context, command: SandboxCommand) -> Result<()> {
                 server = server.answering_calls(text);
             }
 
-            if open {
+            if open || auto {
                 server = server.sending_on_its_own(label.clone());
             }
 

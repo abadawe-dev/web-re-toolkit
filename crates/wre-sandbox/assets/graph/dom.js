@@ -341,16 +341,25 @@
 
   if (typeof globalThis.console !== "object" || globalThis.console === null) {
     globalThis.console = {};
-    var levels = ["log", "warn", "error", "info", "debug", "trace", "table", "dir", "group", "groupEnd", "time", "timeEnd", "assert", "count", "clear"];
-
-    for (var l = 0; l < levels.length; l += 1) {
-      (function (level) {
-        globalThis.console[level] = asNative(function () {
-          readLikeConsole(level, arguments);
-        }, level);
-      })(levels[l]);
-    }
   }
+  // Every console method must stringify as native code: Kasada enumerates console and reads
+  // Function.prototype.toString on each (the `ofc` check). The realm prelude installs plain JS
+  // functions, so re-present them as native here, keeping whatever logging they already do.
+  var levels = ["log", "warn", "error", "info", "debug", "trace", "table", "dir", "dirxml", "group", "groupCollapsed", "groupEnd", "time", "timeLog", "timeEnd", "timeStamp", "assert", "count", "countReset", "clear", "profile", "profileEnd", "context", "createTask"];
+  for (var l = 0; l < levels.length; l += 1) {
+    (function (level) {
+      var existing = globalThis.console[level];
+      var body = typeof existing === "function" ? existing : function () {};
+      globalThis.console[level] = asNative(function () {
+        readLikeConsole(level, arguments);
+        return body.apply(this, arguments);
+      }, level);
+    })(levels[l]);
+  }
+  try {
+    globalThis.console[Symbol.toStringTag] = "console";
+    env.sources.set(globalThis.console, "[object console]");
+  } catch (error) {}
 
   var hexOf = function (value) {
     var view = value instanceof Uint8Array ? value : new Uint8Array(value.buffer || value);
@@ -3441,6 +3450,31 @@
     return out;
   };
 
+  var requestState = new WeakMap();
+  var resolveAgainstPage = function (url) {
+    try {
+      return new URL(url, globalThis.location.href).href;
+    } catch (error) {
+      return url;
+    }
+  };
+
+  if (typeof globalThis.Request === "function") {
+    patchGetter(globalThis.Request.prototype, "headers", function () {
+      var held = requestState.get(this);
+      return held ? held.headers : undefined;
+    });
+    ["url", "method", "body"].forEach(function (field) {
+      patchGetter(globalThis.Request.prototype, field, function () {
+        var held = requestState.get(this);
+        return held ? held[field] : undefined;
+      });
+    });
+    patch(globalThis.Request.prototype, "clone", function clone() {
+      return new globalThis.Request(this);
+    });
+  }
+
   var dictionaries = {
     Request: requestInitKeys,
     UIEvent: ["bubbles", "cancelable", "composed", "detail", "sourceCapabilities", "view"],
@@ -3457,8 +3491,13 @@
 
         try {
           if (name === "Request") {
-            this.url = typeof first === "string" ? first : (first && first.url) || "";
-            this.method = read.method || "GET";
+            var source = first !== null && typeof first === "object" ? requestState.get(first) : undefined;
+            requestState.set(this, {
+              url: resolveAgainstPage(typeof first === "string" ? first : (source && source.url) || String(first && first.url)),
+              method: String(read.method || (source && source.method) || "GET").toUpperCase(),
+              headers: new globalThis.Headers(read.headers !== undefined ? read.headers : source && source.headers),
+              body: read.body !== undefined ? read.body : source && source.body,
+            });
           } else {
             this.type = String(first);
           }
@@ -3674,6 +3713,8 @@
     var pairs = [];
 
     if (init === undefined || init === null) return pairs;
+
+    if (pairState.has(init)) return pairState.get(init).map(function (pair) { return [pair[0], pair[1]]; });
 
     if (typeof init === "string") {
       var text = init.charAt(0) === "?" ? init.slice(1) : init;
@@ -4315,9 +4356,13 @@
   globalThis.fetch = asNative(function fetch(input, init) {
     var url = typeof input === "string" ? input : input && input.url;
     var read = readInit(init, requestInitKeys, alsoAsks);
-    var method = read.method || "GET";
-    var body = read.body;
-    var headers = read.headers;
+    var source = input !== null && typeof input === "object" ? requestState.get(input) : undefined;
+    var method = read.method || (source && source.method) || "GET";
+    var body = read.body !== undefined ? read.body : source && source.body;
+    var headers = {};
+    pairsFrom(read.headers !== undefined ? read.headers : source && source.headers).forEach(function (pair) {
+      headers[String(pair[0]).toLowerCase()] = pair[1];
+    });
 
     record("fetch", { url: url, method: method });
 
@@ -4330,18 +4375,23 @@
         function (status, headerJson, text) {
           var headers = JSON.parse(headerJson);
 
-          resolve({
+          var answer = {
             ok: status >= 200 && status < 300,
             status: status,
+            url: String(url),
             headers: {
               get: function (name) {
                 var value = headers[String(name).toLowerCase()];
                 return value === undefined ? null : value;
               },
+              has: function (name) { return headers[String(name).toLowerCase()] !== undefined; },
+              forEach: function (visit) { Object.keys(headers).forEach(function (name) { visit(headers[name], name); }); },
             },
             text: function () { return Promise.resolve(text); },
             json: function () { return Promise.resolve(JSON.parse(text)); },
-          });
+            clone: function () { return answer; },
+          };
+          resolve(answer);
         },
       );
     });
@@ -5282,6 +5332,12 @@
 
   applyShapes();
 
+  // The capture harness leaves a couple of its own markers on the captured window; a real page has
+  // no such globals, so drop them before any script enumerates or probes the global object.
+  for (var leak = 0, leaks = ["__wreCapture", "__G", "__PRISTINE", "plain", "readInterface", "readPlugins", "readMimeTypes"]; leak < leaks.length; leak += 1) {
+    try { delete globalThis[leaks[leak]]; } catch (error) {}
+  }
+
   if (globalThis.Window && globalThis.Window.prototype) {
     for (var storageKind = 0; storageKind < 2; storageKind += 1) {
       try {
@@ -5303,7 +5359,7 @@
 
     for (var w = 0; w < wanted.length; w += 1) rank[wanted[w]] = w;
 
-    var harnessName = /^__[A-Z]/;
+    var harnessName = /^__/;
 
     var inRecordedOrder = function (names) {
       var indexed = [];

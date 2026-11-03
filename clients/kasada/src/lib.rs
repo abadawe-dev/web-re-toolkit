@@ -185,8 +185,8 @@ pub fn describe() -> ClientDescriptor {
                 "loader",
                 Shape::object(
                     "LoaderInput",
-                    [field("endpoints", Shape::optional(Shape::list(Shape::Json)))
-                        .summary("KPSDK.configure entries, defaults to every path on the page's host")],
+                    [field("endpoints", Shape::optional(Shape::Json))
+                        .summary("KPSDK.configure's argument: a list of entries, or { resourceAddress, endpoints } for newer loaders. Defaults to every path on the page's host")],
                 ),
                 Shape::object(
                     "Loaded",
@@ -768,6 +768,8 @@ impl Client for Kasada {
 
                 let entries = match entries {
                     Value::Array(found) => Value::Array(found),
+                    // Newer loaders take { resourceAddress, endpoints } rather than a bare list.
+                    Value::Object(found) => Value::Object(found),
                     _ => {
                         let host = url::Url::parse(session.page_url())
                             .ok()
