@@ -520,7 +520,6 @@ impl Session {
             url: self.page_url.clone(),
             referrer: String::new(),
             entries: self.timing_entries(),
-            cookies: self.jar.script_header(&self.page_url),
             frames: self.settings.frames,
             capture_cipher: self.settings.capture_vector,
         };

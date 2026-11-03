@@ -1715,12 +1715,215 @@ delete window.__wreCapture;
       if (navigator.userAgentData && navigator.userAgentData.getHighEntropyValues) {
         settle("highEntropy", function () {
           return navigator.userAgentData.getHighEntropyValues([
-            "architecture", "bitness", "formFactor", "fullVersionList", "model", "platformVersion", "uaFullVersion", "wow64",
+            "architecture", "bitness", "formFactors", "fullVersionList", "model", "platformVersion", "uaFullVersion", "wow64",
           ]);
         });
       } else {
         out.highEntropy = null;
       }
+
+      // What Chrome answers to the promise-returning APIs a page probes (user-agent hints, media
+      // capabilities, key systems, voices, WebRTC gathering, ...): the sandbox's platform.js
+      // replays these as traits.platform.
+      var collectPlatformFacts = function () {
+        var facts = {};
+        var safe = function (name, make) {
+          try {
+            return Promise.resolve(make()).then(function (value) { facts[name] = value; }, function (error) { facts[name] = { rejected: [error && error.name, error && error.message] }; });
+          } catch (error) {
+            facts[name] = { threw: [error && error.name, error && error.message] };
+            return Promise.resolve();
+          }
+        };
+        var within = function (promise, ms) {
+          return Promise.race([promise, new Promise(function (resolve) { setTimeout(function () { resolve({ pending: true }); }, ms); })]);
+        };
+        var plain = function (value) { return JSON.parse(JSON.stringify(value)); };
+        var jobs = [];
+
+        jobs.push(safe("highEntropy", function () {
+          return navigator.userAgentData.getHighEntropyValues(["architecture", "bitness", "formFactors", "fullVersionList", "model", "platformVersion", "uaFullVersion", "wow64"]);
+        }));
+
+        jobs.push(safe("voices", function () {
+          return within(new Promise(function (resolve) {
+            var read = function () {
+              return speechSynthesis.getVoices().map(function (v) { return [v.name, v.lang, v.localService, v.default, v.voiceURI]; });
+            };
+            var asked = performance.now();
+            var now = read();
+            if (now.length) return resolve({ immediate: true, list: now });
+            speechSynthesis.addEventListener("voiceschanged", function () { resolve({ immediate: false, delay: Math.round((performance.now() - asked) * 10) / 10, list: read() }); }, { once: true });
+          }), 3000);
+        }));
+
+        var MEDIA = [
+          ["file", "video", 'video/mp4; codecs="avc1.42E01E"'], ["file", "video", 'video/mp4; codecs="avc1.64001F"'],
+          ["file", "video", 'video/mp4; codecs="avc1.640028"'], ["file", "video", 'video/mp4; codecs="hev1.1.6.L93.B0"'],
+          ["file", "video", 'video/mp4; codecs="hvc1.1.6.L93.B0"'], ["file", "video", 'video/mp4; codecs="av01.0.05M.08"'],
+          ["file", "video", 'video/webm; codecs="vp8"'], ["file", "video", 'video/webm; codecs="vp9"'],
+          ["file", "video", 'video/webm; codecs="vp09.00.10.08"'], ["file", "video", 'video/webm; codecs="av01.0.05M.08"'],
+          ["file", "video", 'video/ogg; codecs="theora"'], ["media-source", "video", 'video/mp4; codecs="avc1.42E01E"'],
+          ["media-source", "video", 'video/webm; codecs="vp9"'], ["media-source", "video", 'video/mp4; codecs="av01.0.05M.08"'],
+          ["file", "audio", 'audio/mp4; codecs="mp4a.40.2"'], ["file", "audio", 'audio/webm; codecs="opus"'],
+          ["file", "audio", 'audio/ogg; codecs="vorbis"'], ["file", "audio", 'audio/mpeg'], ["file", "audio", 'audio/flac'],
+          ["file", "audio", 'audio/mp4; codecs="ac-3"'], ["file", "audio", 'audio/mp4; codecs="ec-3"'],
+          ["media-source", "audio", 'audio/mp4; codecs="mp4a.40.2"'], ["media-source", "audio", 'audio/webm; codecs="opus"'],
+          ["webrtc", "video", "video/VP8"], ["webrtc", "video", "video/H264"], ["webrtc", "audio", "audio/opus"],
+        ];
+        facts.decoding = {};
+        MEDIA.forEach(function (row) {
+          var config = { type: row[0] };
+          config[row[1]] = row[1] === "video" ? { contentType: row[2], width: 1280, height: 720, bitrate: 2000000, framerate: 30 } : { contentType: row[2], channels: "2", bitrate: 128000, samplerate: 44100 };
+          jobs.push(navigator.mediaCapabilities.decodingInfo(config).then(function (r) { facts.decoding[row.join("|")] = [r.supported, r.smooth, r.powerEfficient]; }, function (e) { facts.decoding[row.join("|")] = { rejected: [e.name, e.message] }; }));
+        });
+        facts.encoding = {};
+        [["record", "video", 'video/webm; codecs="vp8"'], ["record", "video", 'video/webm; codecs="vp9"'], ["record", "video", 'video/mp4; codecs="avc1.42E01E"'],
+         ["webrtc", "video", "video/VP8"], ["webrtc", "video", "video/H264"], ["webrtc", "audio", "audio/opus"], ["record", "audio", 'audio/webm; codecs="opus"']].forEach(function (row) {
+          var config = { type: row[0] };
+          config[row[1]] = row[1] === "video" ? { contentType: row[2], width: 1280, height: 720, bitrate: 2000000, framerate: 30 } : { contentType: row[2], channels: "2", bitrate: 128000, samplerate: 44100 };
+          jobs.push(navigator.mediaCapabilities.encodingInfo(config).then(function (r) { facts.encoding[row.join("|")] = [r.supported, r.smooth, r.powerEfficient]; }, function (e) { facts.encoding[row.join("|")] = { rejected: [e.name, e.message] }; }));
+        });
+
+        facts.keySystems = {};
+        ["org.w3.clearkey", "com.widevine.alpha", "com.microsoft.playready", "com.microsoft.playready.recommendation", "com.apple.fps", "com.apple.fps.1_0", "com.chromecast.playready", "com.youtube.playready", "com.adobe.primetime", "x-com.nosuch"].forEach(function (system) {
+          var configs = [{ initDataTypes: ["cenc"], audioCapabilities: [{ contentType: 'audio/mp4; codecs="mp4a.40.2"' }], videoCapabilities: [{ contentType: 'video/mp4; codecs="avc1.42E01E"' }] }];
+          jobs.push(navigator.requestMediaKeySystemAccess(system, configs).then(function (access) {
+            facts.keySystems[system] = { granted: true, configuration: plain(access.getConfiguration()) };
+          }, function (e) { facts.keySystems[system] = { granted: false, error: [e.name, e.message] }; }));
+        });
+
+        jobs.push(safe("gpu", function () {
+          if (!navigator.gpu) return null;
+          return navigator.gpu.requestAdapter().then(function (adapter) {
+            return { adapter: adapter ? { vendor: adapter.info.vendor, architecture: adapter.info.architecture, device: adapter.info.device, description: adapter.info.description } : null, format: navigator.gpu.getPreferredCanvasFormat(), wgsl: navigator.gpu.wgslLanguageFeatures ? Array.from(navigator.gpu.wgslLanguageFeatures) : null };
+          });
+        }));
+
+        jobs.push(safe("webauthn", function () {
+          var P = window.PublicKeyCredential;
+          return Promise.all([
+            P.isUserVerifyingPlatformAuthenticatorAvailable(),
+            P.isConditionalMediationAvailable ? P.isConditionalMediationAvailable() : null,
+            P.getClientCapabilities ? P.getClientCapabilities() : null,
+          ]).then(function (r) { return { uvpa: r[0], conditional: r[1], capabilities: r[2] }; });
+        }));
+
+        jobs.push(safe("storage", function () {
+          return Promise.all([navigator.storage.estimate(), navigator.storage.persisted(), document.hasStorageAccess(), navigator.storage.persist()]).then(function (r) {
+            return { quota: r[0].quota, usage: r[0].usage, usageDetails: r[0].usageDetails, persisted: r[1], storageAccess: r[2], persist: r[3] };
+          });
+        }));
+
+        facts.mediaRecorder = {};
+        ["video/webm", "video/webm;codecs=vp8", "video/webm;codecs=vp9", "video/webm;codecs=av1", "video/webm;codecs=h264", "video/webm;codecs=vp8,opus", "video/webm;codecs=avc1",
+         "video/mp4", "video/mp4;codecs=avc1", "video/mp4;codecs=avc1.42E01E", "video/mp4;codecs=avc3", "video/mp4;codecs=hvc1", "video/mp4;codecs=av01", "video/mp4;codecs=vp9", "video/mp4;codecs=opus",
+         "video/x-matroska", "video/x-matroska;codecs=avc1", "video/x-matroska;codecs=hvc1", "audio/webm", "audio/webm;codecs=opus", "audio/webm;codecs=pcm", "audio/ogg", "audio/ogg;codecs=opus",
+         "audio/mp4", "audio/mp4;codecs=mp4a.40.2", "audio/mp4;codecs=opus", "audio/mpeg", "audio/wav", "audio/aac", "video/quicktime", "video/ogg", ""].forEach(function (type) {
+          try { facts.mediaRecorder[type] = MediaRecorder.isTypeSupported(type); } catch (e) { facts.mediaRecorder[type] = "threw " + e.name; }
+        });
+
+        jobs.push(safe("gamepads", function () { var g = navigator.getGamepads(); return { length: g.length, items: Array.from(g).map(function (x) { return x === null ? null : "pad"; }) }; }));
+
+        facts.ai = {};
+        [["Summarizer", {}], ["LanguageDetector", {}], ["Translator", { sourceLanguage: "en", targetLanguage: "fr" }], ["Translator:en-es", { sourceLanguage: "en", targetLanguage: "es" }],
+         ["Writer", {}], ["Rewriter", {}], ["LanguageModel", {}], ["Proofreader", {}]].forEach(function (row) {
+          var name = row[0].split(":")[0];
+          var api = window[name];
+          if (!api || typeof api.availability !== "function") { facts.ai[row[0]] = "absent"; return; }
+          jobs.push(within(api.availability(row[1]), 3000).then(function (v) { facts.ai[row[0]] = v; }, function (e) { facts.ai[row[0]] = { rejected: [e.name, e.message] }; }));
+        });
+
+        facts.notification = [Notification.permission, Notification.maxActions];
+
+        jobs.push(safe("audioContext", function () {
+          var c = new AudioContext();
+          var r = { state: c.state, sampleRate: c.sampleRate, baseLatency: c.baseLatency, outputLatency: c.outputLatency, maxChannelCount: c.destination.maxChannelCount,
+            channelCount: c.destination.channelCount, sinkId: c.sinkId, renderQuantumSize: c.renderQuantumSize };
+          return c.close().then(function () { r.closedState = c.state; return r; });
+        }));
+
+        jobs.push(safe("webrtcData", function () {
+          var pc = new RTCPeerConnection();
+          pc.createDataChannel("x");
+          return pc.createOffer().then(function (offer) {
+            var result = { offerBrand: Object.prototype.toString.call(offer), offerKeys: Object.keys(offer), offerSdp: offer.sdp, candidates: [], states: [] };
+            return new Promise(function (resolve) {
+              var started = performance.now();
+              var at = function () { return Math.round((performance.now() - started) * 10) / 10; };
+              result.timeline = [];
+              pc.onicegatheringstatechange = function () { result.states.push(pc.iceGatheringState); result.timeline.push(["state " + pc.iceGatheringState, at()]); };
+              pc.onicecandidate = function (e) {
+                result.timeline.push([e.candidate ? "candidate" : "end", at()]);
+                if (!e.candidate) {
+                  result.localSdp = pc.localDescription.sdp;
+                  result.eventBrand = Object.prototype.toString.call(e);
+                  pc.close();
+                  resolve(result);
+                  return;
+                }
+                var c = e.candidate;
+                result.candidates.push({ candidate: c.candidate, sdpMid: c.sdpMid, sdpMLineIndex: c.sdpMLineIndex, foundation: c.foundation, component: c.component, priority: c.priority,
+                  address: c.address, protocol: c.protocol, port: c.port, type: c.type, tcpType: c.tcpType, relatedAddress: c.relatedAddress, relatedPort: c.relatedPort,
+                  usernameFragment: c.usernameFragment, url: e.url, brand: Object.prototype.toString.call(c), json: c.toJSON() });
+              };
+              pc.setLocalDescription(offer);
+            });
+          });
+        }));
+
+        jobs.push(safe("webrtcEmpty", function () {
+          var pc = new RTCPeerConnection();
+          return pc.createOffer().then(function (offer) { pc.close(); return { sdp: offer.sdp }; });
+        }));
+
+        jobs.push(safe("devices", function () {
+          return navigator.mediaDevices.enumerateDevices().then(function (list) {
+            return list.map(function (d) { return { kind: d.kind, deviceId: d.deviceId, label: d.label, groupId: d.groupId, brand: Object.prototype.toString.call(d) }; });
+          });
+        }));
+
+        jobs.push(safe("locks", function () { return navigator.locks.query().then(function (q) { return { held: q.held.length, pending: q.pending.length }; }); }));
+        jobs.push(safe("installedApps", function () { return navigator.getInstalledRelatedApps(); }));
+        jobs.push(safe("xr", function () { return navigator.xr ? navigator.xr.isSessionSupported("immersive-vr") : "absent"; }));
+        jobs.push(safe("xrInline", function () { return navigator.xr ? navigator.xr.isSessionSupported("inline") : "absent"; }));
+        jobs.push(safe("serviceWorker", function () { return navigator.serviceWorker.getRegistrations().then(function (r) { return r.length; }); }));
+        jobs.push(safe("permissionsSample", function () {
+          return Promise.all(["notifications", "geolocation", "camera", "microphone", "clipboard-read", "clipboard-write", "persistent-storage", "midi", "push", "background-sync", "accelerometer", "gyroscope", "magnetometer", "screen-wake-lock", "local-fonts", "storage-access", "window-management", "payment-handler", "idle-detection", "display-capture", "nfc", "speaker-selection", "top-level-storage-access", "captured-surface-control", "keyboard-lock", "pointer-lock", "fullscreen", "system-wake-lock", "web-app-installation", "local-network-access"].map(function (n) {
+            return navigator.permissions.query({ name: n }).then(function (s) { return [n, s.state]; }, function (e) { return [n, "rejected " + e.name + ": " + e.message]; });
+          }));
+        }));
+        jobs.push(safe("paymentRequest", function () {
+          if (!window.PaymentRequest) return "absent";
+          var r = new PaymentRequest([{ supportedMethods: "https://google.com/pay" }], { total: { label: "t", amount: { currency: "AUD", value: "1" } } });
+          return within(r.canMakePayment(), 2000);
+        }));
+
+        jobs.push(safe("dataChannel", function () {
+          var pc = new RTCPeerConnection();
+          var c = pc.createDataChannel("x");
+          var r = { label: c.label, ordered: c.ordered, maxPacketLifeTime: c.maxPacketLifeTime, maxRetransmits: c.maxRetransmits, protocol: c.protocol, negotiated: c.negotiated, id: c.id, readyState: c.readyState, bufferedAmount: c.bufferedAmount, bufferedAmountLowThreshold: c.bufferedAmountLowThreshold, binaryType: c.binaryType, reliable: c.reliable };
+          pc.close();
+          r.closedState = c.readyState;
+          r.pc = { canTrickle: pc.canTrickleIceCandidates, sctp: pc.sctp };
+          return r;
+        }));
+        jobs.push(safe("credentials", function () { return within(navigator.credentials.get({ password: true }), 1500); }));
+
+        // Chrome's encodings of a blank canvas at the sizes pages use most, per type (its PNG encoder's
+        // zlib is Chromium's own, so these bytes can only be recorded).
+        facts.blankCanvas = {};
+        [[300, 150], [1, 1], [16, 16], [50, 50], [100, 100], [200, 200], [220, 30], [240, 60], [280, 60], [400, 200], [122, 110], [240, 140]].forEach(function (size) {
+          var canvas = document.createElement("canvas");
+          canvas.width = size[0];
+          canvas.height = size[1];
+          ["image/png", "image/jpeg", "image/webp"].forEach(function (type) { facts.blankCanvas[size.join("x") + " " + type] = canvas.toDataURL(type); });
+        });
+
+        return Promise.all(jobs).then(function () { return facts; });
+      };
+
+      settle("platform", collectPlatformFacts);
 
       var finish = function () {
         drain().then(send, send);

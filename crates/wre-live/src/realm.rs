@@ -368,6 +368,71 @@ impl Realm {
         self.eval_value_in(Some(frame), source, name).map(|_| ())
     }
 
+    /// Runs `source` as a classic script named `name` in `frame`, as a browser runs a worker's
+    /// script: an exception it throws, or a syntax error in it, goes to `method` of the attached
+    /// control `report` as `method(exception, line, column)` and is not an error of the call.
+    /// Errors are only what stops the script itself (the time budget, a source V8 refuses).
+    pub fn run_script_in(&mut self, frame: usize, source: &str, name: &str, report: &Control, method: &str) -> Result<()> {
+        let Some(reporter) = self.controls.get(report.slot).cloned() else {
+            return Err(Error::msg(format!("{} is not attached to this realm", report.name)));
+        };
+        let _entered = self.enter();
+        let guard = self.guard();
+        let context = self.context_for(Some(frame))?;
+
+        {
+            v8::scope_with_context!(let scope, &mut self.isolate, &context);
+            v8::tc_scope!(let tc, scope);
+
+            let Some(code) = v8::String::new(tc, source) else {
+                return Err(Error::msg(format!("{name}: source too large for v8")));
+            };
+            let origin_name = v8::String::new(tc, name)
+                .unwrap_or_else(|| v8::String::new(tc, "wre:anonymous").expect("short string"));
+            let origin = v8::ScriptOrigin::new(tc, origin_name.into(), 0, 0, false, 0, None, false, false, false, None);
+
+            let ran = match v8::Script::compile(tc, code, Some(&origin)) {
+                Some(script) => script.run(tc).is_some(),
+                None => false,
+            };
+
+            if !ran {
+                if tc.has_terminated() {
+                    return Err(Error::msg(format!("{name}: execution ran past the {:?} budget", self.options.timeout)));
+                }
+
+                let Some(exception) = tc.exception() else {
+                    return Err(Error::msg(format!("{name}: the script failed without an exception")));
+                };
+                let (line, column) = match tc.message() {
+                    Some(message) => (message.get_line_number(tc).unwrap_or(0), message.get_start_column() + 1),
+                    None => (0, 0),
+                };
+                tc.reset();
+
+                let holder = v8::Local::new(tc, &reporter);
+                let Some(key) = v8::String::new(tc, method) else {
+                    return Err(Error::msg(format!("{method} is not usable as a name")));
+                };
+                let Some(handler) = holder.get(tc, key.into()).and_then(|value| v8::Local::<v8::Function>::try_from(value).ok()) else {
+                    return Err(Error::msg(format!("{name}: {} has no {method}", report.name)));
+                };
+                let line = v8::Integer::new(tc, line as i32).into();
+                let column = v8::Integer::new(tc, column as i32).into();
+
+                if handler.call(tc, holder.into(), &[exception, line, column]).is_none() {
+                    if tc.has_terminated() {
+                        return Err(Error::msg(format!("{name}: execution ran past the {:?} budget", self.options.timeout)));
+                    }
+                    return Err(Error::msg(format!("{name}: {method} threw: {}", describe_exception(tc))));
+                }
+            }
+        }
+
+        guard.finish();
+        Ok(())
+    }
+
     pub fn eval_json_in(&mut self, frame: usize, expression: &str) -> Result<Value> {
         let wrapped = format!("(function () {{ return ({expression}); }})()");
         self.eval_value_in(Some(frame), &wrapped, "wre:eval")

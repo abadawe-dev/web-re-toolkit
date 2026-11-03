@@ -14,10 +14,23 @@ wre-live.workspace = true
 
 base64.workspace = true
 chrono.workspace = true
-flate2.workspace = true
+encoding_rs = "0.8.35"
+# zlib-rs: zlib's own deflate and messages, so CompressionStream output and DecompressionStream
+# errors are byte for byte Chrome's (miniz_oxide's are not).
+flate2 = { workspace = true, features = ["zlib-rs"] }
 hex.workspace = true
 rand.workspace = true
 regex.workspace = true
+aes.workspace = true
+aes-gcm = { workspace = true }
+cbc = { version = "0.2.1", features = ["alloc"] }
+ctr = "0.10.1"
+hkdf = "0.13.0"
+crc32fast.workspace = true
+hmac.workspace = true
+p256 = { version = "0.14.0", features = ["ecdsa", "ecdh", "pkcs8"] }
+p384 = { version = "0.14.0", features = ["ecdsa", "ecdh", "pkcs8"] }
+pbkdf2.workspace = true
 sha1.workspace = true
 sha2.workspace = true
 serde.workspace = true

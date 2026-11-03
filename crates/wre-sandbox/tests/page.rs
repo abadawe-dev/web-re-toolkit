@@ -108,3 +108,40 @@ fn timers_keep_their_delays_and_intervals_repeat() {
     }
     assert_eq!(graph.read("[__ticks, __soon, __late]").unwrap(), json!([3, true, false]));
 }
+
+/// A host jar that holds one cookie the server set and records what the page writes.
+#[derive(Default)]
+struct Recorded {
+    written: std::sync::Mutex<Vec<String>>,
+}
+
+impl CookieStore for Recorded {
+    fn read(&self) -> String {
+        let mut cookies = vec!["server=1".to_string()];
+        cookies.extend(self.written.lock().unwrap().iter().map(|written| written.split(';').next().unwrap_or_default().to_string()));
+        cookies.join("; ")
+    }
+
+    fn write(&self, assignment: &str) {
+        self.written.lock().unwrap().push(assignment.to_string());
+    }
+}
+
+#[test]
+fn document_cookie_is_the_hosts_jar() {
+    let profile = GraphProfile::bundled(wre_sandbox::graph::BUNDLED_ID).expect("the bundled graph loads");
+    let page = GraphPage { url: "https://shop.example/basket".into(), frames: 1, ..GraphPage::default() };
+    let jar = Arc::new(Recorded::default());
+    let hooks = Hooks { transport: Arc::new(Site), cookies: jar.clone() };
+    let options = RealmOptions { timeout: Duration::from_secs(30), timers: false, codecs: false, clock_ms: None, random_seed: None, heap_limit_mb: None };
+    let mut graph = open(&profile, &page, hooks, options).expect("the sandbox opened");
+
+    graph
+        .eval("globalThis.__seen = document.cookie; document.cookie = 'page=2; path=/; max-age=60';", "https://shop.example/app.js")
+        .expect("the page script ran");
+
+    assert_eq!(graph.read("__seen").unwrap(), json!("server=1"), "the page sees what the server set");
+    assert_eq!(jar.written.lock().unwrap().as_slice(), ["page=2; path=/; max-age=60"], "the assignment reached the jar whole");
+    assert_eq!(graph.read("document.cookie").unwrap(), json!("server=1; page=2"));
+    assert_eq!(graph.read("new Document().cookie").unwrap(), json!(""), "a document a script made has no cookies");
+}

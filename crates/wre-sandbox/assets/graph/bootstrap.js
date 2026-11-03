@@ -9,8 +9,6 @@
 
   var nativeApply = Reflect.apply;
   var nativeHasOwn = Object.prototype.hasOwnProperty;
-  var nativeGet = Reflect.get;
-  var nativeDescriptor = Reflect.getOwnPropertyDescriptor;
   var hasOwn = function (object, key) { return nativeApply(nativeHasOwn, object, [key]); };
   var indexedName = function (name) { return /^(0|[1-9][0-9]*)$/.test(name); };
 
@@ -153,10 +151,7 @@
     }
   };
 
-  var PROTO_KEY = "\u0000proto";
-  var METHOD_SHELL = Object.getOwnPropertyDescriptor(Map.prototype, "get").value;
 
-  var shells = { toString: Object.prototype.toString, valueOf: Object.prototype.valueOf };
 
   var homes = new WeakMap();
   var hosts = new WeakSet();
@@ -258,61 +253,69 @@
     throw thrown;
   };
 
+  // A platform method as Chrome's: an ordinary function that is not a constructor and has no
+  // `prototype`, whose own `name` and `length` are configurable, read-only and deletable, and which
+  // takes properties as any function does. (A strict method shorthand is exactly that; the source
+  // mask presents it as native code.) Defined in the harness, so its frame is trimmed from stacks.
+  var methodOf = function (implementation) {
+    "use strict";
+    return {
+      m() {
+        return nativeApply(implementation, this, arguments);
+      },
+    }.m;
+  };
+
   var asMethod = function (implementation, name, length) {
-    var own = {
-      name: name === undefined ? "" : String(name),
-      length: typeof length === "number" ? length : implementation.length,
-    };
-
-    return new Proxy(shells[own.name] || METHOD_SHELL, {
-      apply: function (target, self, args) {
-        return implementation.apply(self, args);
-      },
-      get: function (target, key, receiver) {
-        if (hasOwn(own, key)) return own[key];
-        return nativeGet(target, key, receiver);
-      },
-      set: function (target, key, value) {
-        own[key] = value;
-        return true;
-      },
-      getOwnPropertyDescriptor: function (target, key) {
-        if (hasOwn(own, key)) {
-          return { value: own[key], writable: false, enumerable: false, configurable: true };
-        }
-
-        return nativeDescriptor(target, key);
-      },
-      defineProperty: function (target, key, descriptor) {
-        if ("value" in descriptor) own[key] = descriptor.value;
-        return true;
-      },
-      getPrototypeOf: function (target) {
-        return hasOwn(own, PROTO_KEY) ? own[PROTO_KEY] : getPrototypeOf(target);
-      },
-      setPrototypeOf: function (target, value) {
-        own[PROTO_KEY] = value;
-        return true;
-      },
-    });
+    var made = methodOf(implementation);
+    Object.defineProperty(made, "name", { value: name === undefined ? "" : String(name), writable: false, enumerable: false, configurable: true });
+    Object.defineProperty(made, "length", { value: typeof length === "number" ? length : implementation.length, writable: false, enumerable: false, configurable: true });
+    return made;
   };
 
   var validName = /^[A-Za-z_$][A-Za-z0-9_$]*$/;
 
   var nameFactories = Object.create(null);
 
-  var withName = function (name, implementation) {
+  // Which interfaces Chrome lets a page construct (a Chrome-build fact, constructors.json):
+  // "Illegal constructor" for the rest, with or without `new`.
+  var constructors = globalThis.__CONSTRUCTORS || { illegal: [], constructible: [] };
+  delete globalThis.__CONSTRUCTORS;
+  var illegalConstructors = Object.create(null);
+  var constructibleInterfaces = Object.create(null);
+  constructors.illegal.forEach(function (name) { illegalConstructors[name] = true; });
+  constructors.constructible.forEach(function (name) { constructibleInterfaces[name] = true; });
+
+  // A captured interface object called as Chrome's would be: refused as an illegal constructor,
+  // refused without `new`, or refused with too few arguments (a constructor's length is how many
+  // it requires).
+  var constructorGuard = function (name, required) {
+    return function (newTarget, count) {
+      if (illegalConstructors[name]) {
+        throw hideFrames(new TypeError(newTarget === undefined ? "Illegal constructor" : "Failed to construct '" + name + "': Illegal constructor"));
+      }
+      if (!constructibleInterfaces[name]) return;
+      if (newTarget === undefined) {
+        throw hideFrames(new TypeError("Failed to construct '" + name + "': Please use the 'new' operator, this DOM object constructor cannot be called as a function."));
+      }
+      if (count < required) {
+        throw hideFrames(new TypeError("Failed to construct '" + name + "': " + required + " argument" + (required === 1 ? "" : "s") + " required, but only " + count + " present."));
+      }
+    };
+  };
+
+  var withName = function (name, implementation, guard) {
     if (!validName.test(name)) return implementation;
 
     if (!nameFactories[name]) {
       try {
-        nameFactories[name] = new Function("inner", "apply", "return function " + name + "() { return apply(inner, this, arguments); }");
+        nameFactories[name] = new Function("inner", "apply", "guard", "return function " + name + "() { if (guard) guard(new.target, arguments.length); return apply(inner, this, arguments); }");
       } catch (error) {
         return implementation;
       }
     }
 
-    return nameFactories[name](implementation, nativeApply);
+    return nameFactories[name](implementation, nativeApply, guard);
   };
 
   var makeFunction = function (record, label) {
@@ -336,7 +339,9 @@
     };
 
     var constructible = Boolean(record.props && record.props.prototype);
-    stub = constructible ? withName(record.name || "", body) : asMethod(body, record.name || "", record.length || 0);
+    // An interface object (whichever path reached it first): Chrome's rules for constructing it.
+    var guarded = record.name && (illegalConstructors[record.name] || constructibleInterfaces[record.name]) ? constructorGuard(record.name, record.length || 0) : null;
+    stub = constructible ? withName(record.name || "", body, guarded) : asMethod(body, record.name || "", record.length || 0);
 
     try {
       Object.defineProperty(stub, "name", { value: record.name || "", configurable: true });
@@ -372,7 +377,9 @@
             try {
               Object.defineProperty(target, Symbol[symbolName], {
                 value: decode(record.props[key].value, label + "." + key),
-                writable: Boolean(record.props[key].w),
+                // Chrome's @@iterator and @@asyncIterator are writable (WebIDL operations); the
+                // capture reads them as not.
+                writable: Boolean(record.props[key].w) || symbolName === "iterator" || symbolName === "asyncIterator",
                 enumerable: Boolean(record.props[key].e),
                 configurable: true,
               });
@@ -414,7 +421,8 @@
 
             Object.defineProperty(target, key, {
               get: function () {
-                if (home !== globalThis && !ownsReceiver(home, this)) illegal(member);
+                // A static attribute (on an interface object) reads the same whatever its receiver.
+                if (home !== globalThis && typeof home !== "function" && !ownsReceiver(home, this)) illegal(member);
 
                 var at = count(calls, "get " + member);
                 var perInstance = overrides.get(this);
@@ -443,6 +451,7 @@
                         overrides.set(this, own);
                       }
                       own[key] = value !== null && (typeof value === "function" || typeof value === "object") ? value : null;
+                      if (hooks.handlerSet) hooks.handlerSet(this, key.slice(2), own[key]);
                     }
                   }
                 : undefined,
@@ -458,7 +467,10 @@
           })(prop, key, member, target);
         } else if (key === "prototype" && typeof target === "function") {
           var interfacePrototype = decode(prop.value, member);
-          if (interfacePrototype !== undefined) target.prototype = interfacePrototype;
+          if (interfacePrototype !== undefined) {
+            target.prototype = interfacePrototype;
+            Object.defineProperty(target, "prototype", { writable: Boolean(prop.w), enumerable: Boolean(prop.e), configurable: Boolean(prop.c) });
+          }
         } else {
           var value = decode(prop.value, member);
           if (typeof value === "function" && !homes.has(value)) homes.set(value, target);
@@ -735,6 +747,85 @@
 
   applyValues();
 
+  // After every module has put its behaviour in place, each captured function the page can reach
+  // (method, getter, setter, constructor) carries the name and length Chrome's has, whatever
+  // implementation now stands in it: a module's function's own arity says nothing about Chrome's.
+  var setShape = function (fn, name, length) {
+    try {
+      if (fn.name !== name) Object.defineProperty(fn, "name", { value: name, writable: false, enumerable: false, configurable: true });
+    } catch (error) {}
+    try {
+      if (fn.length !== length) Object.defineProperty(fn, "length", { value: length, writable: false, enumerable: false, configurable: true });
+    } catch (error) {}
+  };
+
+  var functionRecord = function (ref) {
+    if (!ref || ref.k !== "ref") return null;
+    var record = snapshot.objects[ref.id];
+    return record && record.type === "function" ? record : null;
+  };
+
+  var fixShapes = function (target, record) {
+    var keys = Object.keys(record.props || {});
+
+    for (var index = 0; index < keys.length; index += 1) {
+      var key = keys[index];
+      var prop = record.props[key];
+      var liveKey = key;
+
+      if (key.indexOf("@@") === 0) {
+        if (key.indexOf("@@Symbol.") !== 0 || !Symbol[key.slice(9)]) continue;
+        liveKey = Symbol[key.slice(9)];
+      }
+
+      var live;
+
+      try {
+        live = Object.getOwnPropertyDescriptor(target, liveKey);
+      } catch (error) {
+        continue;
+      }
+
+      if (!live) continue;
+
+      if (prop.accessor) {
+        var getter = functionRecord(prop.get);
+        var setter = functionRecord(prop.set);
+        if (getter && typeof live.get === "function") setShape(live.get, getter.name, getter.length);
+        if (setter && typeof live.set === "function") setShape(live.set, setter.name, setter.length);
+      } else if (prop.value) {
+        var method = functionRecord(prop.value);
+        if (method && typeof live.value === "function") setShape(live.value, method.name, method.length);
+      }
+    }
+  };
+
+  var sealShapes = function () {
+    built.forEach(function (target, id) {
+      var record = snapshot.objects[id];
+      if (record && record.props) fixShapes(target, record);
+    });
+
+    // What a module put on the window in place of a captured object (an interface rebuilt as a
+    // shell, with its statics) takes the captured object's shapes too.
+    var windowRecord = snapshot.roots.window && snapshot.roots.window.k === "ref" ? snapshot.objects[snapshot.roots.window.id] : null;
+    if (!windowRecord) return;
+
+    Object.keys(windowRecord.props || {}).forEach(function (key) {
+      var prop = windowRecord.props[key];
+      if (!prop.value || prop.value.k !== "ref") return;
+      var record = snapshot.objects[prop.value.id];
+      var live;
+      try {
+        live = globalThis[key];
+      } catch (error) {
+        return;
+      }
+      if (!record || !record.props || live === null || (typeof live !== "object" && typeof live !== "function")) return;
+      if (live !== built.get(prop.value.id)) fixShapes(live, record);
+    });
+  };
+
   var seal = function () {
     for (var index = 0; index < locked.length; index += 1) {
       var target = locked[index][0];
@@ -773,8 +864,10 @@
 
       return String(Object.prototype.toString.call(value)).slice(8, -1);
     },
+    // A member checks its receiver as Chrome's: those of an interface object (static operations
+    // and attributes, e.g. Notification.requestPermission) take any.
     guard: function (home, self, label) {
-      if (home !== globalThis && !ownsReceiver(home, self)) illegal(label);
+      if (home !== globalThis && typeof home !== "function" && !ownsReceiver(home, self)) illegal(label);
     },
     rawStringify: JSON.stringify,
     count: function (label) { return count(calls, label); },
@@ -789,6 +882,7 @@
     clock: clock,
     trail: trail,
     seal: seal,
+    sealShapes: sealShapes,
     overrides: overrides,
     snapshot: snapshot,
     sources: sources,
@@ -798,6 +892,7 @@
     materialize: materialize,
     decode: decode,
     bridge: bridge,
+    isFrame: isFrame,
     nativeSource: nativeSource,
   };
 })();

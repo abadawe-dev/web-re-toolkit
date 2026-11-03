@@ -1,0 +1,789 @@
+{
+ "ai": {
+  "LanguageDetector": "available",
+  "LanguageModel": "downloadable",
+  "Proofreader": "absent",
+  "Rewriter": "absent",
+  "Summarizer": "downloadable",
+  "Translator": "downloadable",
+  "Translator:en-es": "downloadable",
+  "Writer": "absent"
+ },
+ "audioContext": {
+  "baseLatency": 0.010666666666666666,
+  "channelCount": 2,
+  "maxChannelCount": 2,
+  "renderQuantumSize": 128,
+  "sampleRate": 48000,
+  "sinkId": ""
+ },
+ "blankCanvas": {
+  "100x100 image/jpeg": "data:image/jpeg;base64,/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAAMCAgICAgMCAgIDAwMDBAYEBAQEBAgGBgUGCQgKCgkICQkKDA8MCgsOCwkJDRENDg8QEBEQCgwSExIQEw8QEBD/2wBDAQMDAwQDBAgEBAgQCwkLEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBD/wAARCABkAGQDASIAAhEBAxEB/8QAFQABAQAAAAAAAAAAAAAAAAAAAAn/xAAUEAEAAAAAAAAAAAAAAAAAAAAA/8QAFAEBAAAAAAAAAAAAAAAAAAAAAP/EABQRAQAAAAAAAAAAAAAAAAAAAAD/2gAMAwEAAhEDEQA/AJVAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA//Z",
+  "100x100 image/png": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAGQAAABkCAYAAABw4pVUAAACAUlEQVR4AeyTwW3gQAzEguu/6OtADwJcTwL6K8ysTEL/fvqmCCRkSsfPT0ISMkZgbJ0uJCFjBMbW6UISMkZgbJ0uJCFjBMbWcS5k7Cd/0zoJGbOVkISMERhbpwtJyBiBsXW6kISMERhbpwtJyBiBsXV+04WMoXPWSYjDFbcmBKNzgglxuOLWhGB0TjAhDlfcmhCMzgkmxOGKWxOC0TnBhDhccWtCMDonmBCHK25NCEbnBBPicMWtCcHonGBCHK64NSEYnRNMiMMVtyYEo3OCCXG44taEYHRnEA8TgtE5wYQ4XHFrQjA6J5gQhytuTQhG5wQT4nDFrQnB6JxgQhyuuDUhGJ0TTIjDFbeeQnBrQUwgIRidE0yIwxW3JgSjc4IJcbji1oRgdE4wIQ5X3JoQjM4JJsThilsTgtE5wQ+EOD/yV1oTMmYyIQkZIzC2TheSkDECY+t0IQkZIzC2TheSkDECY+v8mQsZ44rXSQhG5wQT4nDFrQnB6JxgQhyuuDUhGJ0TTIjDFbcmBKNzgglxuOLWhGB0TjAhJ9f3w4S8Z36+mJATz/thQt4zP19MyInn/TAh75mfLybkxPN+mJD3zM8XE3LieT9MyHvm54sJOfE4w6s1IRedD2YJ+QD69WRCLjofzBLyAfTryYRcdD6YJeQD6NeTCbnofDBLyAfQryf/AwAA///ETPYSAAAABklEQVQDAGz6AMmdea/HAAAAAElFTkSuQmCC",
+  "100x100 image/webp": "data:image/webp;base64,UklGRnYAAABXRUJQVlA4WAoAAAAQAAAAYwAAYwAAQUxQSA8AAAABBxAREQASwv/9QkT/U4kAVlA4IEAAAACwBQCdASpkAGQAPm02mUmkIyKhIKgAgA2JaW7hc+AAY2upvcReWAa6m9xF5YBrqb3EXlgGngAA/v+DYAAAAAAA",
+  "122x110 image/jpeg": "data:image/jpeg;base64,/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAAMCAgICAgMCAgIDAwMDBAYEBAQEBAgGBgUGCQgKCgkICQkKDA8MCgsOCwkJDRENDg8QEBEQCgwSExIQEw8QEBD/2wBDAQMDAwQDBAgEBAgQCwkLEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBD/wAARCABuAHoDASIAAhEBAxEB/8QAFQABAQAAAAAAAAAAAAAAAAAAAAn/xAAUEAEAAAAAAAAAAAAAAAAAAAAA/8QAFAEBAAAAAAAAAAAAAAAAAAAAAP/EABQRAQAAAAAAAAAAAAAAAAAAAAD/2gAMAwEAAhEDEQA/AJVAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA//9k=",
+  "122x110 image/png": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAHoAAABuCAYAAADoHgdpAAACaklEQVR4AezTwQ1bMQwEUSP9Fx0gHexG0P6BxmfRpOfBf35+nigg9BPMv5/QQj9S4JGf6T9a6EcKPPIz/UcL/UiBR34m9R/9CM+5nyn0uZaf/iahP81z7jihz7X89DcJ/Wmec8cJfa7lp79J6E/znDtO6HMtP/1NQt/lmW0Tepb+7mKh7/aebRN6lv7uYqHv9p5tE3qW/u5ioe/2nm0Tepb+7mKh7/aebftP6NndLg4LCB0Goz4XmioX3i10GIz6XGiqXHi30GEw6nOhqXLh3UKHwajPH4WmcvV3C923Q00KjeLqjxW6b4eaFBrF1R8rdN8ONSk0iqs/Vui+HWpSaBRXf6zQfTvUpNAorv5Yoft2qEmhUVz9sUL37VCTQqO4+mOF7tuhJoVGcfXHbqH7u50MCwgdBqM+F5oqF94tdBiM+lxoqlx4t9BhMOpzoaly4d1Ch8Goz4Vu5IAzQgPRmpOFbqoBZ4QGojUnC91UA84IDURrTha6qQacERqI1pwsdFMNOPMPGni3J4cFhA6DUZ8LTZUL7xY6DEZ9LjRVLrxb6DAY9bnQVLnwbqHDYNTnaGhq9MXdQi+qD3YKPYi+WCn0ovpgp9CD6IuVQi+qD3YKPYi+WCn0ovpgp9CD6IuVQi+qD3YKPYi+WCn0ovpgp9CD6IuVQi+qD3YKPYi+WCn0ovpgp9CD6IuVJ6AXd7szLCB0GIz6XGiqXHi30GEw6nOhqXLh3UKHwajPhabKhXcLHQajPn8ZmmpW3S10lY03JDTPrLpY6Cobb0honll1sdBVNt6Q0Dyz6mKhq2y8IaF5ZtXFQlfZeEN/AQAA//9jXXtOAAAABklEQVQDAPJ1AN0wVbGQAAAAAElFTkSuQmCC",
+  "122x110 image/webp": "data:image/webp;base64,UklGRngAAABXRUJQVlA4WAoAAAAQAAAAeQAAbQAAQUxQSA8AAAABBxAREQBQpP//I6L/qTcAVlA4IEIAAAAQBgCdASp6AG4APm02mUmkIyKhIKgAgA2JaW7hdJAAY2upvcReWAa6m9xF5YBrqb3EXlgGupvcLgAA/v+VgAAAAAA=",
+  "16x16 image/jpeg": "data:image/jpeg;base64,/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAAMCAgICAgMCAgIDAwMDBAYEBAQEBAgGBgUGCQgKCgkICQkKDA8MCgsOCwkJDRENDg8QEBEQCgwSExIQEw8QEBD/2wBDAQMDAwQDBAgEBAgQCwkLEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBD/wAARCAAQABADASIAAhEBAxEB/8QAFQABAQAAAAAAAAAAAAAAAAAAAAn/xAAUEAEAAAAAAAAAAAAAAAAAAAAA/8QAFAEBAAAAAAAAAAAAAAAAAAAAAP/EABQRAQAAAAAAAAAAAAAAAAAAAAD/2gAMAwEAAhEDEQA/AJVAA//Z",
+  "16x16 image/png": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAYAAAAf8/9hAAAAJUlEQVR4AeyTsQ0AAAyCSP8/uvEGN4MHOBA4ynkAMpBBMhrw4AEAAP//uBwiawAAAAZJREFUAwBJIAAhJFoqZwAAAABJRU5ErkJggg==",
+  "16x16 image/webp": "data:image/webp;base64,UklGRk4AAABXRUJQVlA4WAoAAAAQAAAADwAADwAAQUxQSA8AAAABBxAREQAIwv+5g4j+pwYAVlA4IBgAAAAwAQCdASoQABAAAUAmJaQAA3AA/v02aAA=",
+  "1x1 image/jpeg": "data:image/jpeg;base64,/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAAMCAgICAgMCAgIDAwMDBAYEBAQEBAgGBgUGCQgKCgkICQkKDA8MCgsOCwkJDRENDg8QEBEQCgwSExIQEw8QEBD/2wBDAQMDAwQDBAgEBAgQCwkLEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBD/wAARCAABAAEDASIAAhEBAxEB/8QAFQABAQAAAAAAAAAAAAAAAAAAAAn/xAAUEAEAAAAAAAAAAAAAAAAAAAAA/8QAFAEBAAAAAAAAAAAAAAAAAAAAAP/EABQRAQAAAAAAAAAAAAAAAAAAAAD/2gAMAwEAAhEDEQA/AJVAA//Z",
+  "1x1 image/png": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4AWJiYGBgAAAAAP//XRcpzQAAAAZJREFUAwAADwADJDd96QAAAABJRU5ErkJggg==",
+  "1x1 image/webp": "data:image/webp;base64,UklGRkAAAABXRUJQVlA4WAoAAAAQAAAAAAAAAAAAQUxQSAIAAAAAAFZQOCAYAAAAMAEAnQEqAQABAAFAJiWkAANwAP79NmgA",
+  "200x200 image/jpeg": "data:image/jpeg;base64,/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAAMCAgICAgMCAgIDAwMDBAYEBAQEBAgGBgUGCQgKCgkICQkKDA8MCgsOCwkJDRENDg8QEBEQCgwSExIQEw8QEBD/2wBDAQMDAwQDBAgEBAgQCwkLEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBD/wAARCADIAMgDASIAAhEBAxEB/8QAFQABAQAAAAAAAAAAAAAAAAAAAAn/xAAUEAEAAAAAAAAAAAAAAAAAAAAA/8QAFAEBAAAAAAAAAAAAAAAAAAAAAP/EABQRAQAAAAAAAAAAAAAAAAAAAAD/2gAMAwEAAhEDEQA/AJVAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA//Z",
+  "200x200 image/png": "data:image/png;base64,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",
+  "200x200 image/webp": "data:image/webp;base64,UklGRrAAAABXRUJQVlA4WAoAAAAQAAAAxwAAxwAAQUxQSBQAAAABBxAREVCQtgFT//a7E9H/5P57CFZQOCB2AAAAUAwAnQEqyADIAD5tNplJpCMioSBIAIANiWlu4XaxG0AT2vRVwgyCGqpNdtouEGQQ1VJrttFwgyCGqpNdtouEGQQ1VJrttFwgyCGqpNdtouEGQQ1VJrttFwgyCGqpNdtouEGQQ1VJrttFnAAA/v/WAAAAAAAAAA==",
+  "220x30 image/jpeg": "data:image/jpeg;base64,/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAAMCAgICAgMCAgIDAwMDBAYEBAQEBAgGBgUGCQgKCgkICQkKDA8MCgsOCwkJDRENDg8QEBEQCgwSExIQEw8QEBD/2wBDAQMDAwQDBAgEBAgQCwkLEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBD/wAARCAAeANwDASIAAhEBAxEB/8QAFQABAQAAAAAAAAAAAAAAAAAAAAn/xAAUEAEAAAAAAAAAAAAAAAAAAAAA/8QAFAEBAAAAAAAAAAAAAAAAAAAAAP/EABQRAQAAAAAAAAAAAAAAAAAAAAD/2gAMAwEAAhEDEQA/AJVAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA//9k=",
+  "220x30 image/png": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAANwAAAAeCAYAAABHenA+AAABA0lEQVR4AezTMQrEMAxFQbP3P/SCG0M6fSMVZrYIWbAiMuT9lh8BAmMCghujtojAWoLzFRAYFBDcILZVBATnG0gFzAUCggvQjBBIBQSXypkjEAgILkAzQiAVEFwqZ45AICC4jeZCYEZAcDPOthDYAoLbDC4EZgQEN+NsC4EtILjN4EIgFajNCa7m5TSBKwHBXfEZJlATEFzNy2kCVwKCu+IzTKAmILia19unvV27gODaiS0gcAQEdyzcEWgXEFw7sQUEjoDgjoU7Au0CzwbXLmcBgUBAcAGaEQKpgOBSOXMEAgHBBWhGCKQCgkvlzD0r0PliguvU9WwCHwHBfUD8JdAp8AcAAP//lOv0KgAAAAZJREFUAwDodAA9rjmOJAAAAABJRU5ErkJggg==",
+  "220x30 image/webp": "data:image/webp;base64,UklGRmoAAABXRUJQVlA4WAoAAAAQAAAA2wAAHQAAQUxQSA8AAAABBxAREQASwv/7SkT/UyMAVlA4IDQAAAAwBACdASrcAB4APm02mUmkIyKhISgAgA2JaQAACLUStWrVq1atWrVq00AA/vucwAAAAAAA",
+  "240x140 image/jpeg": "data:image/jpeg;base64,/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAAMCAgICAgMCAgIDAwMDBAYEBAQEBAgGBgUGCQgKCgkICQkKDA8MCgsOCwkJDRENDg8QEBEQCgwSExIQEw8QEBD/2wBDAQMDAwQDBAgEBAgQCwkLEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBD/wAARCACMAPADASIAAhEBAxEB/8QAFQABAQAAAAAAAAAAAAAAAAAAAAn/xAAUEAEAAAAAAAAAAAAAAAAAAAAA/8QAFAEBAAAAAAAAAAAAAAAAAAAAAP/EABQRAQAAAAAAAAAAAAAAAAAAAAD/2gAMAwEAAhEDEQA/AJVAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA//Z",
+  "240x140 image/png": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAPAAAACMCAYAAABCtSQoAAAElElEQVR4AezT0YrjOgAD0OH+/0df6FMhtGQTN7assw/D0Gli62j1359/BAjEChhwbHUuTuDvz4D9LyAQLGDAweW5OoHmAWufQLyAAcdXKECzgAE3ty97vIABx1coQLOAAXe2L/UmAga8SZFidAoYcGfvUm8iYMCbFClGp4ABd/benHqr7Aa8VZ3CtAkYcFvj8m4lYMBb1SlMm4ABtzUu71YC/zjgrbILQyBewIDjKxSgWcCAm9uXPV7AgOMrFKBZwIBPt++LBNYTMOD1OnEjAqcFDPg0lS8SWE/AgNfrxI0InBYw4NNUzV+UfVUBA161GfcicELAgE8g+QqBVQUMeNVm3IvACQEDPoHkK80Ca2c34LX7cTsCXwUM+CuPPxJYW8CA1+7H7Qh8FTDgrzz+SGBtgd8OeO3sbkcgXsCA4ysUoFnAgJvblz1ewIDjKxSgWcCAf9W+9xJ4QMCAH0B2BIFfCRjwr2S9l8ADAgb8ALIjCPxKwIB/Jdv8XtkfEzDgx6gdRGC8gAGPN/VGAo8JGPBj1A4iMF7AgMebemOzwMPZDfhhcMcRGClgwCM1vYvAwwIG/DC44wiMFDDgkZreReBhgaUG/HB2xxGIFzDg+AoFaBYw4Ob2ZY8XMOD4CgVoFjDgRdp3DQJXBAz4ippnCCwiYMCLFOEaBK4IGPAVNc8QWETAgBcpovkasl8XMODrdp4kMF3AgKdX4AIErgsY8HU7TxKYLmDA0ytwgWaBu9kN+K6g5wlMFDDgifiOJnBXwIDvCnqewEQBA56I72gCdwWSB3w3u+cJxAsYcHyFAjQLGHBz+7LHCxhwfIUCNAsYcGb7bk3gJWDALwY/CGQKGHBmb25N4CVgwC8GPwhkChhwZm/Nt5b9TcCA3zD8SiBNwIDTGnNfAm8CBvyG4VcCaQIGnNaY+zYLHLIb8IHEBwRyBAw4pys3JXAQMOADiQ8I5AgYcE5XbkrgIFA04EN2HxCIFzDg+AoFaBYw4Ob2ZY8XMOD4CgVoFjDgivaF3FXAgHdtVq4KAQOuqFnIXQUMeNdm5aoQMOCKmptD7p3dgPfuV7rNBQx484LF21vAgPfuV7rNBQx484LF21vg+4D3zi4dgXgBA46vUIBmAQNubl/2eAEDjq9QgGYBA/7Uvs8JBAgYcEBJrkjgk4ABf5LxOYEAAQMOKMkVCXwSMOBPMs2fyx4jYMAxVbkogaOAAR9NfEIgRsCAY6pyUQJHAQM+mvikWSAsuwGHFea6BN4FDPhdw+8EwgQMOKww1yXwLmDA7xp+JxAmMHTAYdldl0C8gAHHVyhAs4ABN7cve7yAAcdXKECzgAEPat9rCMwQMOAZ6s4kMEjAgAdBeg2BGQIGPEPdmQQGCRjwIMjm18g+T8CA59k7mcBtAQO+TegFBOYJGPA8eycTuC1gwLcJvaBZYHZ2A57dgPMJ3BAw4Bt4HiUwW8CAZzfgfAI3BAz4Bp5HCcwWmDng2dmdTyBewIDjKxSgWcCAm9uXPV7AgOMrFKBZwIDntO9UAkMEDHgIo5cQmCNgwHPcnUpgiIABD2H0EgJzBP4HAAD//4p2wo4AAAAGSURBVAMAlLUBGTqluOcAAAAASUVORK5CYII=",
+  "240x140 image/webp": "data:image/webp;base64,UklGRp4AAABXRUJQVlA4WAoAAAAQAAAA7wAAiwAAQUxQSBEAAAABBxARERASJPz/bjai/2n/OwBWUDggZgAAAHAKAJ0BKvAAjAA+bTaZSaQjIqEgSACADYlpbuF2sRtAE9r0VcIMghqqTXbaLhBkENVSa7bRcIMghqqTXbaLhBkENVSa7bRcIMghqqTXbaLhBkENVSa7bRcIMgKAAP7/1gAAAAAAAA==",
+  "240x60 image/jpeg": "data:image/jpeg;base64,/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAAMCAgICAgMCAgIDAwMDBAYEBAQEBAgGBgUGCQgKCgkICQkKDA8MCgsOCwkJDRENDg8QEBEQCgwSExIQEw8QEBD/2wBDAQMDAwQDBAgEBAgQCwkLEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBD/wAARCAA8APADASIAAhEBAxEB/8QAFQABAQAAAAAAAAAAAAAAAAAAAAn/xAAUEAEAAAAAAAAAAAAAAAAAAAAA/8QAFAEBAAAAAAAAAAAAAAAAAAAAAP/EABQRAQAAAAAAAAAAAAAAAAAAAAD/2gAMAwEAAhEDEQA/AJVAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA//9k=",
+  "240x60 image/png": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAPAAAAA8CAYAAABYfzddAAAB/0lEQVR4AezTUW7FIBADwKj3P3RvEPEiWO3i6W9TwOP67/FDgMBYAQMeW52HE3geA/ZfQGCwgAEPLs/TCSQPWPsExgsY8PgKBUgWMODk9mUfL2DA4ysUIFnAgDPbl/oSAQO+pEgxMgUMOLN3qS8RMOBLihQjU8CAM3tPTn1VdgO+qk5h0gQMOK1xea8SMOCr6hQmTcCA0xqX9yqBHwd8VXZhCIwXMODxFQqQLGDAye3LPl7AgMdXKECygAEvt+9DAv0EDLhfJ15EYFnAgJepfEign4AB9+vEiwgsCxjwMlXyh7J3FTDgrs14F4EFAQNeQPIJga4CBty1Ge8isCBgwAtIPkkW6J3dgHv343UEXgUM+JXHLwn0FjDg3v14HYFXAQN+5fFLAr0Fzg64d3avIzBewIDHVyhAsoABJ7cv+3gBAx5foQDJAgZ8qn3nEigQMOACZFcQOCVgwKdknUugQMCAC5BdQeCUgAGfkk0+V/YyAQMuo3YRgf0CBrzf1IkEygQMuIzaRQT2CxjwflMnJgsUZzfgYnDXEdgpYMA7NZ1FoFjAgIvBXUdgp4AB79R0FoFigVYDLs7uOgLjBQx4fIUCJAsYcHL7so8XMODxFQqQLGDATdr3DAJfBAz4i5q/IdBEwICbFOEZBL4IGPAXNX9DoImAATcpIvkZsn8X+AcAAP//3BDTYwAAAAZJREFUAwCPsgB57Fsu5QAAAABJRU5ErkJggg==",
+  "240x60 image/webp": "data:image/webp;base64,UklGRnoAAABXRUJQVlA4WAoAAAAQAAAA7wAAOwAAQUxQSA8AAAABBxAREQBQpP//I6L/qUEAVlA4IEQAAAAwBgCdASrwADwAPm02mUmkIyKhIIgAgA2JaW7hdJAAT22IvEFRz2xF4gqOe2IvEFRz2xF4gqOe2ItgAP7/lYAAAAAAAA==",
+  "280x60 image/jpeg": "data:image/jpeg;base64,/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAAMCAgICAgMCAgIDAwMDBAYEBAQEBAgGBgUGCQgKCgkICQkKDA8MCgsOCwkJDRENDg8QEBEQCgwSExIQEw8QEBD/2wBDAQMDAwQDBAgEBAgQCwkLEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBD/wAARCAA8ARgDASIAAhEBAxEB/8QAFQABAQAAAAAAAAAAAAAAAAAAAAn/xAAUEAEAAAAAAAAAAAAAAAAAAAAA/8QAFAEBAAAAAAAAAAAAAAAAAAAAAP/EABQRAQAAAAAAAAAAAAAAAAAAAAD/2gAMAwEAAhEDEQA/AJVAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA//9k=",
+  "280x60 image/png": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAARgAAAA8CAYAAAC9xKUYAAACPElEQVR4AezZQWoEMQwEQJH/Pzr7hO2DkKWtkKOw5eqhCeSv/BAgQKBJQME0wTqWAIEqBeMrIECgTUDBtNE6eFrA/fMCCmY+AxsQOCugYM5G62EE5gUUzHwGNiBwVkDBNEXrWAIE/BfJN0CAQKOAv2AacR1N4NcFFMyvfwHeTyAVCOYVTIBllACBTEDBZF6mCRAIBBRMgGWUAIFMQMFkXqanBdy/SkDBrIrLsgR2CSiYXXnZlsAqAQWzKi7LEtgloGCSvMwSIBAJKJiIyzABAomAgkm0zBIgEAkomIjLMIGrAj3vUjA9rk4lQOAjoGA+CH4JEOgRUDA9rk4lQOAjoGA+CH6nBdx/VUDBXE3Wuwg8IKBgHgjBCgSuCiiYq8l6F4EHBBRMPZCCFQgcFVAwR4P1LAIvCCiYF1KwA4GjAgrmaLCeRaCqxhEUzHgEFiBwV0DB3M3WywiMCyiY8QgsQOCugIK5m+30y9xPoBSMj4AAgTYBBdNG62ACBBSMb4AAgTaBqwXTBuZgAgS+F1Aw31uZJEAgFFAwIZhxAgS+F1Aw31uZJPCEwKYlFMymtOxKYJmAglkWmHUJbBJQMJvSsiuBZQIKZllg0+u6n0AioGASLbMECEQCCibiMkyAQCKgYBItswQIRAKrCiZ6mWECBMYFFMx4BBYgcFdAwdzN1ssIjAsomPEILECgqo4iKJijwXoWgRcEFMwLKdiBwFEBBXM0WM8i8IKAgnkhhekd3E+gSUDBNME6lgCBqn8AAAD//y9rClQAAAAGSURBVAMApTkAec60ld4AAAAASUVORK5CYII=",
+  "280x60 image/webp": "data:image/webp;base64,UklGRoAAAABXRUJQVlA4WAoAAAAQAAAAFwEAOwAAQUxQSA8AAAABBxAREQBQpP//JaL/qQwAVlA4IEoAAADwBgCdASoYATwAPm02mUmkIyKhIIgAgA2JaW7hdUAAT22IvEFRz2xF4gqOe2IvEFRz2xF4gqOe2IvEFRz2xDwAAP7/rAAAAAAAAA==",
+  "300x150 image/jpeg": "data:image/jpeg;base64,/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAAMCAgICAgMCAgIDAwMDBAYEBAQEBAgGBgUGCQgKCgkICQkKDA8MCgsOCwkJDRENDg8QEBEQCgwSExIQEw8QEBD/2wBDAQMDAwQDBAgEBAgQCwkLEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBD/wAARCACWASwDASIAAhEBAxEB/8QAFQABAQAAAAAAAAAAAAAAAAAAAAn/xAAUEAEAAAAAAAAAAAAAAAAAAAAA/8QAFAEBAAAAAAAAAAAAAAAAAAAAAP/EABQRAQAAAAAAAAAAAAAAAAAAAAD/2gAMAwEAAhEDEQA/AJVAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA//9k=",
+  "300x150 image/png": "data:image/png;base64,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",
+  "300x150 image/webp": "data:image/webp;base64,UklGRrgAAABXRUJQVlA4WAoAAAAQAAAAKwEAlQAAQUxQSBIAAAABBxARERCQJP7/H0X0P+1/QwBWUDgggAAAAHANAJ0BKiwBlgA+bTaZSaQjIqEgKACADYlpbuF2sRtACewD32ych77ZOQ99snIe+2TkPfbJyHvtk5D32ych77ZOQ99snIe+2TkPfbJyHvtk5D32ych77ZOQ99snIe+2TkPfbJyHvtk5D32ych77ZOQ99qwAAP7/1gAAAAAAAAAA",
+  "400x200 image/jpeg": "data:image/jpeg;base64,/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAAMCAgICAgMCAgIDAwMDBAYEBAQEBAgGBgUGCQgKCgkICQkKDA8MCgsOCwkJDRENDg8QEBEQCgwSExIQEw8QEBD/2wBDAQMDAwQDBAgEBAgQCwkLEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBD/wAARCADIAZADASIAAhEBAxEB/8QAFQABAQAAAAAAAAAAAAAAAAAAAAn/xAAUEAEAAAAAAAAAAAAAAAAAAAAA/8QAFAEBAAAAAAAAAAAAAAAAAAAAAP/EABQRAQAAAAAAAAAAAAAAAAAAAAD/2gAMAwEAAhEDEQA/AJVAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA//Z",
+  "400x200 image/png": "data:image/png;base64,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",
+  "400x200 image/webp": "data:image/webp;base64,UklGRgwBAABXRUJQVlA4WAoAAAAQAAAAjwEAxwAAQUxQSCcAAAABBxARESQBSYrKiIgGQJH+/6eI/idQIP7+o4hIAEX+/xcRkfrvP0QAVlA4IL4AAACwFACdASqQAcgAPm02mUmkIyKhICgAgA2JaW7hd2EbQAnsA99snIe+2TkPfbJyHvtk5D32ych77ZOQ99snIe+2TkPfbJyHvtk5D32ych77ZOQ99snIe+2TkPfbJyHvtk5D32ych77ZOQ99snIe+2TkPfbJyHvtk5D32ych77ZOQ99snIe+2TkPfbJyHvtk5D32ych77ZOQ99snIe+2TkPfbJyHvtk5D32ych77VgAA/v/rAAAAAAAAAAAAAAAA",
+  "50x50 image/jpeg": "data:image/jpeg;base64,/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAAMCAgICAgMCAgIDAwMDBAYEBAQEBAgGBgUGCQgKCgkICQkKDA8MCgsOCwkJDRENDg8QEBEQCgwSExIQEw8QEBD/2wBDAQMDAwQDBAgEBAgQCwkLEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBD/wAARCAAyADIDASIAAhEBAxEB/8QAFQABAQAAAAAAAAAAAAAAAAAAAAn/xAAUEAEAAAAAAAAAAAAAAAAAAAAA/8QAFAEBAAAAAAAAAAAAAAAAAAAAAP/EABQRAQAAAAAAAAAAAAAAAAAAAAD/2gAMAwEAAhEDEQA/AJVAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA//9k=",
+  "50x50 image/png": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAADIAAAAyCAYAAAAeP4ixAAAAnUlEQVR4AeySQQqAMADDxP8/2g94aUlhjHgUGrZk73PJ50VOC2kRi4wM+LRGYmusRWp1o6FFRmJrrEVqdaOhRUZia6xFanWjoUVGYmssWaQ+BDH0IoRFkmER0ibBsghhkWRYhLRJsCxCWCQZFiFtEiyLEBZJhkVImwTLIoRFkmER0uYPK/5lkVjZeGCRseAYb5FY2XhgkbHgGH9NkQ8AAP//Ook/1gAAAAZJREFUAwD50QBl/J/4kwAAAABJRU5ErkJggg==",
+  "50x50 image/webp": "data:image/webp;base64,UklGRmQAAABXRUJQVlA4WAoAAAAQAAAAMQAAMQAAQUxQSA8AAAABBxAREQASwv/1YkT/Uy4AVlA4IC4AAACQAwCdASoyADIAPm02mEkkIyKhIggAgA2JaQAAEDdTUAV4hbkAAP77nMAAAAAA"
+ },
+ "chrome": "156",
+ "dataChannel": {
+  "binaryType": "arraybuffer",
+  "bufferedAmount": 0,
+  "bufferedAmountLowThreshold": 0,
+  "closedState": "connecting",
+  "id": null,
+  "label": "x",
+  "maxPacketLifeTime": null,
+  "maxRetransmits": null,
+  "negotiated": false,
+  "ordered": true,
+  "pc": {
+   "canTrickle": null,
+   "sctp": null
+  },
+  "protocol": "",
+  "readyState": "connecting",
+  "reliable": true
+ },
+ "decoding": {
+  "file|audio|audio/flac": [
+   true,
+   true,
+   true
+  ],
+  "file|audio|audio/mp4; codecs=\"ac-3\"": [
+   false,
+   false,
+   false
+  ],
+  "file|audio|audio/mp4; codecs=\"ec-3\"": [
+   false,
+   false,
+   false
+  ],
+  "file|audio|audio/mp4; codecs=\"mp4a.40.2\"": [
+   true,
+   true,
+   true
+  ],
+  "file|audio|audio/mpeg": [
+   true,
+   true,
+   true
+  ],
+  "file|audio|audio/ogg; codecs=\"vorbis\"": [
+   true,
+   true,
+   true
+  ],
+  "file|audio|audio/webm; codecs=\"opus\"": [
+   true,
+   true,
+   true
+  ],
+  "file|video|video/mp4; codecs=\"av01.0.05M.08\"": [
+   true,
+   true,
+   false
+  ],
+  "file|video|video/mp4; codecs=\"avc1.42E01E\"": [
+   true,
+   true,
+   false
+  ],
+  "file|video|video/mp4; codecs=\"avc1.64001F\"": [
+   true,
+   true,
+   false
+  ],
+  "file|video|video/mp4; codecs=\"avc1.640028\"": [
+   true,
+   true,
+   false
+  ],
+  "file|video|video/mp4; codecs=\"hev1.1.6.L93.B0\"": [
+   false,
+   false,
+   false
+  ],
+  "file|video|video/mp4; codecs=\"hvc1.1.6.L93.B0\"": [
+   false,
+   false,
+   false
+  ],
+  "file|video|video/ogg; codecs=\"theora\"": [
+   false,
+   false,
+   false
+  ],
+  "file|video|video/webm; codecs=\"av01.0.05M.08\"": [
+   true,
+   true,
+   false
+  ],
+  "file|video|video/webm; codecs=\"vp09.00.10.08\"": [
+   true,
+   true,
+   false
+  ],
+  "file|video|video/webm; codecs=\"vp8\"": [
+   true,
+   true,
+   false
+  ],
+  "file|video|video/webm; codecs=\"vp9\"": [
+   false,
+   false,
+   false
+  ],
+  "media-source|audio|audio/mp4; codecs=\"mp4a.40.2\"": [
+   true,
+   true,
+   true
+  ],
+  "media-source|audio|audio/webm; codecs=\"opus\"": [
+   true,
+   true,
+   true
+  ],
+  "media-source|video|video/mp4; codecs=\"av01.0.05M.08\"": [
+   true,
+   true,
+   false
+  ],
+  "media-source|video|video/mp4; codecs=\"avc1.42E01E\"": [
+   true,
+   true,
+   false
+  ],
+  "media-source|video|video/webm; codecs=\"vp9\"": [
+   false,
+   false,
+   false
+  ],
+  "webrtc|audio|audio/opus": [
+   true,
+   true,
+   true
+  ],
+  "webrtc|video|video/H264": [
+   true,
+   true,
+   false
+  ],
+  "webrtc|video|video/VP8": [
+   true,
+   true,
+   false
+  ]
+ },
+ "encoding": {
+  "record|audio|audio/webm; codecs=\"opus\"": {
+   "rejected": [
+    "TypeError",
+    "Failed to execute 'encodingInfo' on 'MediaCapabilities': The provided value 'record' is not a valid enum value of type MediaEncodingType."
+   ]
+  },
+  "record|video|video/mp4; codecs=\"avc1.42E01E\"": {
+   "rejected": [
+    "TypeError",
+    "Failed to execute 'encodingInfo' on 'MediaCapabilities': The provided value 'record' is not a valid enum value of type MediaEncodingType."
+   ]
+  },
+  "record|video|video/webm; codecs=\"vp8\"": {
+   "rejected": [
+    "TypeError",
+    "Failed to execute 'encodingInfo' on 'MediaCapabilities': The provided value 'record' is not a valid enum value of type MediaEncodingType."
+   ]
+  },
+  "record|video|video/webm; codecs=\"vp9\"": {
+   "rejected": [
+    "TypeError",
+    "Failed to execute 'encodingInfo' on 'MediaCapabilities': The provided value 'record' is not a valid enum value of type MediaEncodingType."
+   ]
+  },
+  "webrtc|audio|audio/opus": [
+   true,
+   true,
+   true
+  ],
+  "webrtc|video|video/H264": [
+   true,
+   true,
+   false
+  ],
+  "webrtc|video|video/VP8": [
+   true,
+   true,
+   false
+  ]
+ },
+ "gamepads": {
+  "items": [
+   null,
+   null,
+   null,
+   null,
+   null,
+   null,
+   null,
+   null
+  ],
+  "length": 8
+ },
+ "gpu": {
+  "adapter": null,
+  "format": "rgba8unorm",
+  "wgsl": [
+   "packed_4x8_integer_dot_product",
+   "subgroup_uniformity",
+   "immediate_address_space",
+   "linear_indexing",
+   "subgroup_id",
+   "readonly_and_readwrite_storage_textures",
+   "swizzle_assignment",
+   "unrestricted_pointer_parameters",
+   "buffer_view",
+   "pointer_composite_access",
+   "texture_and_sampler_let",
+   "texture_formats_tier1",
+   "uniform_buffer_standard_layout"
+  ]
+ },
+ "keySystems": {
+  "com.adobe.primetime": {
+   "error": [
+    "NotSupportedError",
+    "Unsupported keySystem or supportedConfigurations."
+   ],
+   "granted": false
+  },
+  "com.apple.fps": {
+   "error": [
+    "NotSupportedError",
+    "Unsupported keySystem or supportedConfigurations."
+   ],
+   "granted": false
+  },
+  "com.apple.fps.1_0": {
+   "error": [
+    "NotSupportedError",
+    "Unsupported keySystem or supportedConfigurations."
+   ],
+   "granted": false
+  },
+  "com.chromecast.playready": {
+   "error": [
+    "NotSupportedError",
+    "Unsupported keySystem or supportedConfigurations."
+   ],
+   "granted": false
+  },
+  "com.microsoft.playready": {
+   "error": [
+    "NotSupportedError",
+    "Unsupported keySystem or supportedConfigurations."
+   ],
+   "granted": false
+  },
+  "com.microsoft.playready.recommendation": {
+   "error": [
+    "NotSupportedError",
+    "Unsupported keySystem or supportedConfigurations."
+   ],
+   "granted": false
+  },
+  "com.widevine.alpha": {
+   "configuration": {
+    "audioCapabilities": [
+     {
+      "contentType": "audio/mp4; codecs=\"mp4a.40.2\"",
+      "encryptionScheme": null,
+      "robustness": ""
+     }
+    ],
+    "distinctiveIdentifier": "not-allowed",
+    "initDataTypes": [
+     "cenc"
+    ],
+    "label": "",
+    "persistentState": "not-allowed",
+    "sessionTypes": [
+     "temporary"
+    ],
+    "videoCapabilities": [
+     {
+      "contentType": "video/mp4; codecs=\"avc1.42E01E\"",
+      "encryptionScheme": null,
+      "robustness": ""
+     }
+    ]
+   },
+   "granted": true
+  },
+  "com.youtube.playready": {
+   "error": [
+    "NotSupportedError",
+    "Unsupported keySystem or supportedConfigurations."
+   ],
+   "granted": false
+  },
+  "org.w3.clearkey": {
+   "configuration": {
+    "audioCapabilities": [
+     {
+      "contentType": "audio/mp4; codecs=\"mp4a.40.2\"",
+      "encryptionScheme": null,
+      "robustness": ""
+     }
+    ],
+    "distinctiveIdentifier": "not-allowed",
+    "initDataTypes": [
+     "cenc"
+    ],
+    "label": "",
+    "persistentState": "not-allowed",
+    "sessionTypes": [
+     "temporary"
+    ],
+    "videoCapabilities": [
+     {
+      "contentType": "video/mp4; codecs=\"avc1.42E01E\"",
+      "encryptionScheme": null,
+      "robustness": ""
+     }
+    ]
+   },
+   "granted": true
+  },
+  "x-com.nosuch": {
+   "error": [
+    "NotSupportedError",
+    "Unsupported keySystem or supportedConfigurations."
+   ],
+   "granted": false
+  }
+ },
+ "mediaRecorder": {
+  "": true,
+  "audio/aac": false,
+  "audio/mp4": true,
+  "audio/mp4;codecs=mp4a.40.2": false,
+  "audio/mp4;codecs=opus": true,
+  "audio/mpeg": false,
+  "audio/ogg": false,
+  "audio/ogg;codecs=opus": false,
+  "audio/wav": false,
+  "audio/webm": true,
+  "audio/webm;codecs=opus": true,
+  "audio/webm;codecs=pcm": true,
+  "video/mp4": true,
+  "video/mp4;codecs=av01": true,
+  "video/mp4;codecs=avc1": true,
+  "video/mp4;codecs=avc1.42E01E": true,
+  "video/mp4;codecs=avc3": true,
+  "video/mp4;codecs=hvc1": false,
+  "video/mp4;codecs=opus": true,
+  "video/mp4;codecs=vp9": true,
+  "video/ogg": false,
+  "video/quicktime": false,
+  "video/webm": true,
+  "video/webm;codecs=av1": true,
+  "video/webm;codecs=avc1": true,
+  "video/webm;codecs=h264": true,
+  "video/webm;codecs=vp8": true,
+  "video/webm;codecs=vp8,opus": true,
+  "video/webm;codecs=vp9": true,
+  "video/x-matroska": true,
+  "video/x-matroska;codecs=avc1": true,
+  "video/x-matroska;codecs=hvc1": false
+ },
+ "notification": [
+  "default",
+  2
+ ],
+ "paymentRequest": true,
+ "permissionsSample": [
+  [
+   "notifications",
+   "prompt"
+  ],
+  [
+   "geolocation",
+   "prompt"
+  ],
+  [
+   "camera",
+   "prompt"
+  ],
+  [
+   "microphone",
+   "prompt"
+  ],
+  [
+   "clipboard-read",
+   "prompt"
+  ],
+  [
+   "clipboard-write",
+   "granted"
+  ],
+  [
+   "persistent-storage",
+   "prompt"
+  ],
+  [
+   "midi",
+   "prompt"
+  ],
+  [
+   "push",
+   "rejected NotSupportedError: Failed to execute 'query' on 'Permissions': Push Permission without userVisibleOnly:true isn't supported yet."
+  ],
+  [
+   "background-sync",
+   "granted"
+  ],
+  [
+   "accelerometer",
+   "granted"
+  ],
+  [
+   "gyroscope",
+   "granted"
+  ],
+  [
+   "magnetometer",
+   "granted"
+  ],
+  [
+   "screen-wake-lock",
+   "granted"
+  ],
+  [
+   "local-fonts",
+   "prompt"
+  ],
+  [
+   "storage-access",
+   "granted"
+  ],
+  [
+   "window-management",
+   "prompt"
+  ],
+  [
+   "payment-handler",
+   "granted"
+  ],
+  [
+   "idle-detection",
+   "prompt"
+  ],
+  [
+   "display-capture",
+   "prompt"
+  ],
+  [
+   "nfc",
+   "rejected TypeError: Failed to execute 'query' on 'Permissions': Web NFC is not enabled."
+  ],
+  [
+   "speaker-selection",
+   "rejected TypeError: Failed to execute 'query' on 'Permissions': The Speaker Selection API is not enabled."
+  ],
+  [
+   "top-level-storage-access",
+   "rejected TypeError: Failed to execute 'query' on 'Permissions': The requested origin is invalid."
+  ],
+  [
+   "captured-surface-control",
+   "prompt"
+  ],
+  [
+   "keyboard-lock",
+   "granted"
+  ],
+  [
+   "pointer-lock",
+   "granted"
+  ],
+  [
+   "fullscreen",
+   "rejected TypeError: Failed to execute 'query' on 'Permissions': Fullscreen Permission only supports allowWithoutGesture:true."
+  ],
+  [
+   "system-wake-lock",
+   "rejected TypeError: Failed to execute 'query' on 'Permissions': System Wake Lock is not enabled."
+  ],
+  [
+   "web-app-installation",
+   "rejected TypeError: Failed to execute 'query' on 'Permissions': The Web App Install API is not enabled."
+  ],
+  [
+   "local-network-access",
+   "prompt"
+  ]
+ ],
+ "voices": {
+  "delay": 39.7,
+  "immediate": false,
+  "list": [
+   [
+    "Google Deutsch",
+    "de-DE",
+    false,
+    true,
+    "Google Deutsch"
+   ],
+   [
+    "Google US English",
+    "en-US",
+    false,
+    false,
+    "Google US English"
+   ],
+   [
+    "Google UK English Female",
+    "en-GB",
+    false,
+    false,
+    "Google UK English Female"
+   ],
+   [
+    "Google UK English Male",
+    "en-GB",
+    false,
+    false,
+    "Google UK English Male"
+   ],
+   [
+    "Google español",
+    "es-ES",
+    false,
+    false,
+    "Google español"
+   ],
+   [
+    "Google español de Estados Unidos",
+    "es-US",
+    false,
+    false,
+    "Google español de Estados Unidos"
+   ],
+   [
+    "Google français",
+    "fr-FR",
+    false,
+    false,
+    "Google français"
+   ],
+   [
+    "Google हिन्दी",
+    "hi-IN",
+    false,
+    false,
+    "Google हिन्दी"
+   ],
+   [
+    "Google Bahasa Indonesia",
+    "id-ID",
+    false,
+    false,
+    "Google Bahasa Indonesia"
+   ],
+   [
+    "Google italiano",
+    "it-IT",
+    false,
+    false,
+    "Google italiano"
+   ],
+   [
+    "Google 日本語",
+    "ja-JP",
+    false,
+    false,
+    "Google 日本語"
+   ],
+   [
+    "Google 한국의",
+    "ko-KR",
+    false,
+    false,
+    "Google 한국의"
+   ],
+   [
+    "Google Nederlands",
+    "nl-NL",
+    false,
+    false,
+    "Google Nederlands"
+   ],
+   [
+    "Google polski",
+    "pl-PL",
+    false,
+    false,
+    "Google polski"
+   ],
+   [
+    "Google português do Brasil",
+    "pt-BR",
+    false,
+    false,
+    "Google português do Brasil"
+   ],
+   [
+    "Google русский",
+    "ru-RU",
+    false,
+    false,
+    "Google русский"
+   ],
+   [
+    "Google 普通话（中国大陆）",
+    "zh-CN",
+    false,
+    false,
+    "Google 普通话（中国大陆）"
+   ],
+   [
+    "Google 粤語（香港）",
+    "zh-HK",
+    false,
+    false,
+    "Google 粤語（香港）"
+   ],
+   [
+    "Google 國語（臺灣）",
+    "zh-TW",
+    false,
+    false,
+    "Google 國語（臺灣）"
+   ]
+  ]
+ },
+ "webauthn": {
+  "capabilities": {
+   "conditionalCreate": true,
+   "conditionalGet": true,
+   "extension:appid": true,
+   "extension:appidExclude": true,
+   "extension:cmtgKey": false,
+   "extension:credBlob": true,
+   "extension:credProps": true,
+   "extension:credentialProtectionPolicy": true,
+   "extension:crossDeviceFallbackUrl": false,
+   "extension:enforceCredentialProtectionPolicy": true,
+   "extension:getCredBlob": true,
+   "extension:hmacCreateSecret": true,
+   "extension:largeBlob": true,
+   "extension:minPinLength": true,
+   "extension:payment": false,
+   "extension:prf": true,
+   "hybridTransport": true,
+   "immediateGet": true,
+   "passkeyPlatformAuthenticator": true,
+   "relatedOrigins": true,
+   "signalAllAcceptedCredentials": true,
+   "signalCurrentUserDetails": true,
+   "signalUnknownCredential": true,
+   "userVerifyingPlatformAuthenticator": false
+  },
+  "conditional": true,
+  "uvpa": false
+ },
+ "webrtcData": {
+  "candidates": [
+   {
+    "address": "32e31d9c-6ff1-49ce-98e0-c82d6b7dd28f.local",
+    "brand": "[object RTCIceCandidate]",
+    "candidate": "candidate:3813936357 1 udp 2113937151 32e31d9c-6ff1-49ce-98e0-c82d6b7dd28f.local 45616 typ host generation 0 ufrag XS3P network-cost 999",
+    "component": "rtp",
+    "foundation": "3813936357",
+    "json": {
+     "candidate": "candidate:3813936357 1 udp 2113937151 32e31d9c-6ff1-49ce-98e0-c82d6b7dd28f.local 45616 typ host generation 0 ufrag XS3P network-cost 999",
+     "sdpMLineIndex": 0,
+     "sdpMid": "0",
+     "usernameFragment": "XS3P"
+    },
+    "port": 45616,
+    "priority": 2113937151,
+    "protocol": "udp",
+    "relatedAddress": null,
+    "relatedPort": null,
+    "sdpMLineIndex": 0,
+    "sdpMid": "0",
+    "tcpType": null,
+    "type": "host",
+    "usernameFragment": "XS3P"
+   }
+  ],
+  "eventBrand": "[object RTCPeerConnectionIceEvent]",
+  "localSdp": "v=0\r\no=- 3241552602328872830 2 IN IP4 127.0.0.1\r\ns=-\r\nt=0 0\r\na=group:BUNDLE 0\r\na=extmap-allow-mixed\r\na=msid-semantic: WMS\r\nm=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\nc=IN IP4 0.0.0.0\r\na=candidate:3813936357 1 udp 2113937151 32e31d9c-6ff1-49ce-98e0-c82d6b7dd28f.local 45616 typ host generation 0 network-cost 999\r\na=ice-ufrag:XS3P\r\na=ice-pwd:/w9+bKAuc9DDlaUlQNi5nfzj\r\na=ice-options:trickle\r\na=fingerprint:sha-256 3D:AF:8A:1B:24:22:F6:96:EF:DD:3F:B6:2D:5A:A5:C0:8B:FE:CC:97:77:FE:D8:44:8F:D2:4C:63:4D:B3:49:4F\r\na=setup:actpass\r\na=mid:0\r\na=sctp-port:5000\r\na=max-message-size:262144\r\n",
+  "offerBrand": "[object Object]",
+  "offerKeys": [
+   "sdp",
+   "type"
+  ],
+  "offerSdp": "v=0\r\no=- 3241552602328872830 2 IN IP4 127.0.0.1\r\ns=-\r\nt=0 0\r\na=group:BUNDLE 0\r\na=extmap-allow-mixed\r\na=msid-semantic: WMS\r\nm=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\nc=IN IP4 0.0.0.0\r\na=ice-ufrag:XS3P\r\na=ice-pwd:/w9+bKAuc9DDlaUlQNi5nfzj\r\na=ice-options:trickle\r\na=fingerprint:sha-256 3D:AF:8A:1B:24:22:F6:96:EF:DD:3F:B6:2D:5A:A5:C0:8B:FE:CC:97:77:FE:D8:44:8F:D2:4C:63:4D:B3:49:4F\r\na=setup:actpass\r\na=mid:0\r\na=sctp-port:5000\r\na=max-message-size:262144\r\n",
+  "states": [
+   "gathering",
+   "complete"
+  ],
+  "timeline": [
+   [
+    "state gathering",
+    3
+   ],
+   [
+    "candidate",
+    4
+   ],
+   [
+    "state complete",
+    125.2
+   ],
+   [
+    "end",
+    125.2
+   ]
+  ]
+ },
+ "webrtcEmpty": {
+  "sdp": "v=0\r\no=- 3858651437267431964 2 IN IP4 127.0.0.1\r\ns=-\r\nt=0 0\r\na=extmap-allow-mixed\r\na=msid-semantic: WMS\r\n"
+ },
+ "xr": false,
+ "xrInline": true
+}

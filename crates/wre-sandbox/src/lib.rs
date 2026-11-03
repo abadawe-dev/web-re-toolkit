@@ -1,6 +1,7 @@
 pub mod audit;
 pub mod browser;
 pub mod capture;
+pub mod codec;
 pub mod graph;
 pub mod machine;
 pub mod host;
@@ -8,6 +9,7 @@ pub mod install;
 pub mod library;
 pub mod page;
 pub mod profile;
+pub mod subtle;
 
 pub use audit::{Finding, Level, audit, warnings};
 pub use browser::{Answer, Browser, CookieStore, Held, Hooks, Offline, Request, Transport, open};

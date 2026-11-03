@@ -106,6 +106,54 @@
     } catch (error) {}
   };
 
+  // Constructs a page constructor's shell: `construct(args, newTarget)` makes the instance; the
+  // shell takes over the captured constructor's prototype, statics and global name, refuses a call
+  // without `new` as Chrome does, and stringifies as native. `illegal` makes it refuse every call
+  // ("Illegal constructor"), as for interfaces a page cannot construct.
+  var installShell = function (name, construct, length, options) {
+    var Original = (options && options.holder) || globalThis[name];
+    if (typeof Original !== "function" || !Original.prototype) return null;
+
+    var Shell = function () {
+      if (options && options.illegal) {
+        throw env.hideFrames(new TypeError("Failed to construct '" + name + "': Illegal constructor"));
+      }
+      if (new.target === undefined) {
+        throw env.hideFrames(new TypeError("Failed to construct '" + name + "': Please use the 'new' operator, this DOM object constructor cannot be called as a function."));
+      }
+      var required = options && options.required !== undefined ? options.required : 0;
+      if (arguments.length < required) {
+        throw env.hideFrames(new TypeError("Failed to construct '" + name + "': " + required + " argument" + (required === 1 ? "" : "s") + " required, but only " + arguments.length + " present."));
+      }
+      var made = construct(Array.prototype.slice.call(arguments), new.target);
+      if (new.target !== Shell && made && Object.getPrototypeOf(made) !== new.target.prototype) Object.setPrototypeOf(made, new.target.prototype);
+      return made;
+    };
+
+    try {
+      Object.defineProperty(Shell, "name", { value: name, configurable: true });
+    } catch (error) {}
+    env.sources.set(Shell, env.nativeSource(name));
+
+    try {
+      Object.defineProperty(Shell, "prototype", { value: Original.prototype, writable: false, enumerable: false, configurable: false });
+      Object.defineProperty(Shell, "length", { value: length || 0, configurable: true });
+      for (var key of Object.getOwnPropertyNames(Original)) {
+        if (key === "prototype" || key === "length" || key === "name") continue;
+        Object.defineProperty(Shell, key, Object.getOwnPropertyDescriptor(Original, key));
+      }
+      var parent = Object.getPrototypeOf(Original);
+      if (parent && parent !== Function.prototype) Object.setPrototypeOf(Shell, parent);
+      Object.defineProperty(Original.prototype, "constructor", { value: Shell, writable: true, enumerable: false, configurable: true });
+      if (!options || !options.holder) {
+        var descriptor = Object.getOwnPropertyDescriptor(globalThis, name);
+        Object.defineProperty(globalThis, name, { value: Shell, writable: true, enumerable: descriptor ? descriptor.enumerable : false, configurable: true });
+      }
+    } catch (error) {}
+
+    return Shell;
+  };
+
   var protoOf = function (value) {
     try {
       return value ? Object.getPrototypeOf(value) : null;
@@ -159,32 +207,85 @@
     return Uint8Array.from(bytes);
   };
 
+  // UTF-8 decoding as the Encoding standard does it: each ill-formed sequence (overlong, surrogate,
+  // out of range, truncated) becomes one U+FFFD, and the decoder resumes at the offending byte.
   var utf8Decode = function (bytes) {
-    var view = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes && bytes.buffer ? bytes.buffer : bytes || []);
+    var view = bytes instanceof Uint8Array ? bytes : ArrayBuffer.isView(bytes) ? new Uint8Array(bytes.buffer, bytes.byteOffset, bytes.byteLength) : new Uint8Array(bytes || []);
+    var units = [];
     var out = "";
+    var index = 0;
 
-    for (var index = 0; index < view.length; ) {
+    var flush = function () {
+      out += String.fromCharCode.apply(null, units);
+      units = [];
+    };
+
+    while (index < view.length) {
       var byte = view[index];
+      var need = 0;
+      var point = 0;
+      var lower = 0x80;
+      var upper = 0xbf;
 
       if (byte < 0x80) {
-        out += String.fromCharCode(byte);
+        units.push(byte);
         index += 1;
-      } else if (byte < 0xe0) {
-        out += String.fromCharCode(((byte & 31) << 6) | (view[index + 1] & 63));
-        index += 2;
-      } else if (byte < 0xf0) {
-        out += String.fromCharCode(((byte & 15) << 12) | ((view[index + 1] & 63) << 6) | (view[index + 2] & 63));
-        index += 3;
       } else {
-        var point = ((byte & 7) << 18) | ((view[index + 1] & 63) << 12) | ((view[index + 2] & 63) << 6) | (view[index + 3] & 63);
-        point -= 0x10000;
-        out += String.fromCharCode(0xd800 + (point >> 10), 0xdc00 + (point & 1023));
-        index += 4;
+        if (byte >= 0xc2 && byte <= 0xdf) {
+          need = 1;
+          point = byte & 0x1f;
+        } else if (byte >= 0xe0 && byte <= 0xef) {
+          need = 2;
+          point = byte & 0xf;
+          if (byte === 0xe0) lower = 0xa0;
+          if (byte === 0xed) upper = 0x9f;
+        } else if (byte >= 0xf0 && byte <= 0xf4) {
+          need = 3;
+          point = byte & 0x7;
+          if (byte === 0xf0) lower = 0x90;
+          if (byte === 0xf4) upper = 0x8f;
+        }
+
+        if (need === 0) {
+          units.push(0xfffd);
+          index += 1;
+        } else {
+          var seen = 0;
+          var cursor = index + 1;
+
+          while (seen < need && cursor < view.length) {
+            var next = view[cursor];
+            if (next < lower || next > upper) break;
+            lower = 0x80;
+            upper = 0xbf;
+            point = (point << 6) | (next & 0x3f);
+            seen += 1;
+            cursor += 1;
+          }
+
+          if (seen < need) {
+            units.push(0xfffd);
+            index = cursor;
+          } else {
+            if (point > 0xffff) {
+              point -= 0x10000;
+              units.push(0xd800 + (point >> 10), 0xdc00 + (point & 1023));
+            } else {
+              units.push(point);
+            }
+            index = cursor;
+          }
+        }
       }
+
+      if (units.length > 4096) flush();
     }
 
+    flush();
     return out;
   };
+
+  env.decodeUtf8 = utf8Decode;
 
   if (env.captureCipher) {
     var realJoin = Array.prototype.join;
@@ -464,22 +565,31 @@
     } catch (error) {}
   }
 
-  // Timer id -> its callback, or for setTimeout/setInterval { callback, every, extra } (`every`,
-  // an interval's period, makes it fire again until cleared).
+  // Timer id -> its callback, or for setTimeout/setInterval { callback, every, extra, nesting }
+  // (`every`, an interval's period, makes it fire again until cleared).
   var timers = new Map();
   var nextTimer = 1;
 
-  // A timer's delay as a browser reads it: converted to a number, never negative.
-  var delayOf = function (delay) {
+  // Chrome's timer nesting: a timer set while another runs is one level deeper (an interval goes
+  // one deeper each time it repeats), and from the fifth level a delay under 4 ms becomes 4 ms.
+  var MAX_NESTING = 5;
+  var CLAMP_MS = 4;
+  var nesting = 0;
+
+  // A timer's delay as a browser reads it: converted to a number, never negative, clamped once
+  // timers nest deep.
+  var delayOf = function (delay, level) {
     var ms = Number(delay);
-    return isFinite(ms) && ms > 0 ? ms : 0;
+    ms = isFinite(ms) && ms > 0 ? ms : 0;
+    return level >= MAX_NESTING && ms < CLAMP_MS ? CLAMP_MS : ms;
   };
 
   var schedule = function (label, callback, delay, extra, repeat) {
     var id = nextTimer++;
-    var wait = delayOf(delay);
+    var level = nesting + 1;
+    var wait = delayOf(delay, level);
     env.count(label + ":" + String(typeof delay === "number" ? delay : 0));
-    timers.set(id, { callback: callback, every: repeat ? Math.max(wait, 1) : undefined, extra: extra });
+    timers.set(id, { callback: callback, every: repeat ? Number(delay) : undefined, extra: extra, nesting: level });
     bridge.schedule(id, wait, extra);
     return id;
   };
@@ -600,12 +710,26 @@
     var entry = timers.get(id);
     if (!entry) return false;
     var callback = typeof entry === "function" ? entry : entry.callback;
+    var level = typeof entry === "function" ? 0 : entry.nesting;
 
     // An interval goes round again before its callback runs, so the callback can clear it.
-    if (typeof entry !== "function" && entry.every !== undefined) bridge.schedule(id, entry.every, entry.extra);
-    else timers.delete(id);
+    if (typeof entry !== "function" && entry.every !== undefined) {
+      entry.nesting = level + 1;
+      bridge.schedule(id, delayOf(entry.every, entry.nesting), entry.extra);
+    } else {
+      timers.delete(id);
+    }
 
-    if (typeof callback === "function") callback.apply(null, extra || []);
+    var outer = nesting;
+    nesting = level;
+
+    try {
+      if (typeof callback === "function") callback.apply(null, extra || []);
+      else if (typeof callback === "string") (0, eval)(callback);
+    } finally {
+      nesting = outer;
+    }
+
     return true;
   };
 
@@ -613,7 +737,10 @@
     return timers.size;
   };
 
-  var listeners = new Map();
+  // Event targets, as the DOM standard runs them: each target keeps its listeners per type, in the
+  // order they were added (an event handler attribute holds its place from when it was first set),
+  // a listener is added once per callback and capture flag, and `once` and `signal` take it out.
+  var listeners = new WeakMap();
 
   var listenersFor = function (target, type) {
     var byType = listeners.get(target);
@@ -633,75 +760,287 @@
     return list;
   };
 
-  var addListener = function addEventListener(type, handler) {
-    if (typeof handler !== "function" && (!handler || typeof handler.handleEvent !== "function")) return undefined;
-    listenersFor(this, String(type)).push(handler);
+  var captureOf = function (options) {
+    if (typeof options === "boolean") return options;
+    return Boolean(options && (typeof options === "object" || typeof options === "function") && options.capture);
+  };
+
+  var takeOut = function (list, entry) {
+    entry.removed = true;
+    var at = list.indexOf(entry);
+    if (at !== -1) list.splice(at, 1);
+  };
+
+  var addListener = function addEventListener(type, callback, options) {
+    if (arguments.length < 2) {
+      throw env.hideFrames(new TypeError("Failed to execute 'addEventListener' on 'EventTarget': 2 arguments required, but only " + arguments.length + " present."));
+    }
+    if (callback === null || callback === undefined) return undefined;
+    if (typeof callback !== "function" && typeof callback !== "object") {
+      throw env.hideFrames(new TypeError("Failed to execute 'addEventListener' on 'EventTarget': parameter 2 is not of type 'Object'."));
+    }
+
+    var detailed = options !== null && (typeof options === "object" || typeof options === "function");
+    var capture = captureOf(options);
+    var signal = detailed ? options.signal : undefined;
+    if (signal && signalState.has(signal) && signalState.get(signal).aborted) return undefined;
+
+    var list = listenersFor(this, String(type));
+
+    for (var index = 0; index < list.length; index += 1) {
+      if (!list[index].inline && list[index].callback === callback && list[index].capture === capture) return undefined;
+    }
+
+    var entry = {
+      callback: callback,
+      capture: capture,
+      once: detailed && Boolean(options.once),
+      passive: detailed && Boolean(options.passive),
+      removed: false,
+    };
+
+    list.push(entry);
+
+    if (signal && signalState.has(signal)) {
+      signalState.get(signal).algorithms.push(function () { takeOut(list, entry); });
+    }
+
     return undefined;
   };
 
-  var removeListener = function removeEventListener(type, handler) {
+  var removeListener = function removeEventListener(type, callback, options) {
+    var capture = captureOf(options);
     var list = listenersFor(this, String(type));
-    var index = list.indexOf(handler);
-    if (index !== -1) list.splice(index, 1);
+
+    for (var index = 0; index < list.length; index += 1) {
+      if (!list[index].inline && list[index].callback === callback && list[index].capture === capture) {
+        takeOut(list, list[index]);
+        break;
+      }
+    }
+
     return undefined;
+  };
+
+  // An event handler attribute (onload = ...) is a listener at the place it was first set; setting
+  // it to null takes it out, and setting it again puts it at the end.
+  env.handlerSet = function (target, type, value) {
+    var list = listenersFor(target, type);
+    var held = null;
+
+    for (var index = 0; index < list.length; index += 1) {
+      if (list[index].inline) held = list[index];
+    }
+
+    if (value === null || value === undefined || typeof value !== "function") {
+      if (held) takeOut(list, held);
+      return;
+    }
+
+    if (!held) list.push({ inline: true, capture: false, once: false, passive: false, removed: false });
+  };
+
+  var reportException = function (error) {
+    var message = error && typeof error === "object" && "message" in error ? String(error.name || "Error") + ": " + String(error.message) : String(error);
+    var stack = error && error.stack ? String(error.stack) : "";
+    var where = /\((https?:[^)]*?):(\d+):(\d+)\)/.exec(stack) || /at (https?:\S*?):(\d+):(\d+)/.exec(stack);
+
+    record("listenerError", { message: message });
+
+    var event = makeEvent("error", {
+      message: "Uncaught " + message,
+      filename: where ? where[1] : "",
+      lineno: where ? Number(where[2]) : 0,
+      colno: where ? Number(where[3]) : 0,
+      error: error,
+      cancelable: true,
+    }, "ErrorEvent");
+
+    dispatch(globalThis, event);
+  };
+
+  env.reportException = reportException;
+
+  // The node a target's event goes to next on its way up: its parent, then from the document the
+  // window (except for "load", which a window hears from its own document only).
+  var parentFor = function (target, event) {
+    if (target === globalThis) return null;
+
+    var parent = null;
+
+    try {
+      parent = target.parentNode;
+    } catch (error) {
+      return null;
+    }
+
+    if (parent) return parent;
+
+    if (target === globalThis.document || (target && target.nodeType === 9)) {
+      return event.type === "load" || target !== globalThis.document ? null : globalThis;
+    }
+
+    return null;
+  };
+
+  var invoke = function (target, event, fields, phase) {
+    var list = listeners.get(target);
+    list = list ? list.get(event.type) : null;
+    if (!list || !list.length) return;
+
+    var snapshot = list.slice();
+
+    for (var index = 0; index < snapshot.length; index += 1) {
+      var entry = snapshot[index];
+      if (entry.removed) continue;
+      if (phase === "capture" && !entry.capture) continue;
+      if (phase === "bubble" && entry.capture) continue;
+      if (entry.once) takeOut(list, entry);
+
+      fields.passive = entry.passive;
+
+      try {
+        if (entry.inline) {
+          var handler = target["on" + event.type];
+
+          if (typeof handler === "function") {
+            var returned = event.type === "error" && target === globalThis && event instanceof globalThis.ErrorEvent
+              ? handler.call(target, fields.message, fields.filename, fields.lineno, fields.colno, fields.error)
+              : handler.call(target, event);
+
+            if (event.type === "error" && target === globalThis ? returned === true : returned === false) {
+              if (fields.cancelable) fields.canceled = true;
+            }
+          }
+        } else if (typeof entry.callback === "function") {
+          entry.callback.call(target, event);
+        } else {
+          var handle = entry.callback.handleEvent;
+          if (typeof handle !== "function") throw new TypeError("handleEvent is not a function");
+          handle.call(entry.callback, event);
+        }
+      } catch (error) {
+        fields.passive = false;
+        if (event.type === "error" && target === globalThis) record("listenerError", { message: String(error && error.message) });
+        else reportException(error);
+      }
+
+      fields.passive = false;
+      if (fields.stopImmediate) return;
+    }
   };
 
   var dispatch = function (target, event) {
-    var type = event.type;
-    var bubbles = event.bubbles;
-    var cancelable = event.cancelable;
-    var composed = event.composed;
-    var list = listenersFor(target, type).slice();
     var fields = eventFields.get(event);
 
-    if (fields) {
-      fields.target = fields.target || target;
+    if (!fields) {
+      throw env.hideFrames(new TypeError("Failed to execute 'dispatchEvent' on 'EventTarget': parameter 1 is not of type 'Event'."));
+    }
+
+    if (fields.dispatching) {
+      throw domException("Failed to execute 'dispatchEvent' on 'EventTarget': The event is already being dispatched.", "InvalidStateError");
+    }
+
+    // A stop set before dispatch (cancelBubble = true) does not keep the target's own listeners
+    // from running, and stays set afterwards, as in Chrome.
+    var stoppedBefore = fields.stop;
+    fields.stop = false;
+    fields.dispatching = true;
+    fields.target = target;
+    fields.srcElement = target;
+
+    var path = [target];
+
+    for (var up = parentFor(target, event); up && path.length < 256; up = parentFor(up, event)) path.push(up);
+
+    fields.path = path;
+
+    for (var down = path.length - 1; down > 0 && !fields.stop; down -= 1) {
+      fields.currentTarget = path[down];
+      fields.eventPhase = 1;
+      invoke(path[down], event, fields, "capture");
+    }
+
+    if (!fields.stop) {
       fields.currentTarget = target;
-      fields.srcElement = fields.target;
-    } else {
-      event.target = event.target || target;
-      event.currentTarget = target;
+      fields.eventPhase = 2;
+      invoke(target, event, fields, "capture");
+      if (!fields.stop) invoke(target, event, fields, "bubble");
     }
 
-    for (var index = 0; index < list.length; index += 1) {
-      var handler = list[index];
-
-      try {
-        if (typeof handler === "function") handler.call(target, event);
-        else handler.handleEvent(event);
-      } catch (error) {
-        record("listenerError", { type: event.type, message: String(error && error.message) });
+    if (fields.bubbles) {
+      for (var out = 1; out < path.length && !fields.stop; out += 1) {
+        fields.currentTarget = path[out];
+        fields.eventPhase = 3;
+        invoke(path[out], event, fields, "bubble");
       }
     }
 
-    var inline = target["on" + type];
+    fields.eventPhase = 0;
+    fields.currentTarget = null;
+    fields.path = [];
+    fields.dispatching = false;
+    fields.stop = fields.stop || stoppedBefore;
+    fields.stopImmediate = false;
 
-    if (typeof inline === "function") {
-      try {
-        inline.call(target, event);
-      } catch (error) {
-        record("listenerError", { type: event.type, message: String(error && error.message) });
-      }
-    }
-
-    return true;
+    return !fields.canceled;
   };
 
   env.dispatch = dispatch;
 
-  var makeEvent = function (type, extra) {
-    var event = { type: String(type), bubbles: false, cancelable: false, timeStamp: env.clock(), isTrusted: true, target: null, currentTarget: null };
-    if (extra) for (var key in extra) event[key] = extra[key];
-    event.preventDefault = function () {};
-    event.stopPropagation = function () {};
-    event.stopImmediatePropagation = function () {};
-    return event;
+  // Abort controllers and signals: an aborted signal runs what was waiting on it (listeners added
+  // with it come out), then fires "abort".
+  var signalState = new WeakMap();
+
+  var makeSignal = function () {
+    var signal = Object.create(globalThis.AbortSignal.prototype);
+    signalState.set(signal, { aborted: false, reason: undefined, algorithms: [] });
+    return signal;
+  };
+
+  var abortSignal = function (signal, reason) {
+    var state = signalState.get(signal);
+    if (!state || state.aborted) return;
+
+    state.aborted = true;
+    state.reason = reason === undefined ? domException("signal is aborted without reason", "AbortError") : reason;
+
+    var waiting = state.algorithms;
+    state.algorithms = [];
+    for (var index = 0; index < waiting.length; index += 1) waiting[index]();
+
+    dispatch(signal, makeEvent("abort"));
+  };
+
+  var domException = function (message, name) {
+    var made;
+
+    try {
+      made = new globalThis.DOMException(message, name);
+    } catch (error) {
+      made = new Error(message);
+      made.name = name;
+    }
+
+    return made;
+  };
+
+  env.domException = domException;
+  env.makeSignal = makeSignal;
+  env.abortSignal = abortSignal;
+  env.signalState = signalState;
+
+  // The event a browser makes itself (isTrusted true), of the interface it fires: "load" is an
+  // Event, a message a MessageEvent, a failed script an ErrorEvent. `extra` sets its fields.
+  var makeEvent = function (type, extra, iface) {
+    return createEvent(iface || "Event", type, extra || {}, true);
   };
 
   // A frame's document finished loading: its window hears "load" before the iframe element does.
   env.fireLoad = function () { dispatch(globalThis, makeEvent("load")); };
 
   env.makeEvent = makeEvent;
+  env.hooks.handlerSet = env.handlerSet;
 
   var eventFields = new WeakMap();
 
@@ -724,7 +1063,9 @@
     "ProgressEvent", "StorageEvent", "PageTransitionEvent", "HashChangeEvent", "PopStateEvent",
     "AnimationEvent", "TransitionEvent", "ClipboardEvent", "DragEvent", "SubmitEvent", "ToggleEvent",
     "SecurityPolicyViolationEvent", "GamepadEvent", "DeviceMotionEvent", "DeviceOrientationEvent",
-    "TouchEvent", "MediaQueryListEvent",
+    "TouchEvent", "MediaQueryListEvent", "CloseEvent", "OfflineAudioCompletionEvent",
+    "RTCPeerConnectionIceEvent", "RTCDataChannelEvent", "SpeechSynthesisEvent", "SpeechSynthesisErrorEvent",
+    "BlobEvent", "FormDataEvent", "TrackEvent", "MessageEvent", "BeforeUnloadEvent",
   ];
 
   var eventDefaults = {
@@ -736,51 +1077,209 @@
     MessageEvent: { data: null, origin: "", lastEventId: "", source: null, ports: [] },
     ProgressEvent: { lengthComputable: false, loaded: 0, total: 0 },
     ErrorEvent: { message: "", filename: "", lineno: 0, colno: 0, error: null },
+    CloseEvent: { wasClean: false, code: 0, reason: "" },
+    PageTransitionEvent: { persisted: false },
+    PromiseRejectionEvent: { promise: null, reason: undefined },
+    OfflineAudioCompletionEvent: { renderedBuffer: null },
+    RTCPeerConnectionIceEvent: { candidate: null, url: null },
+    MediaQueryListEvent: { media: "", matches: false },
   };
+
+  var eventProto = function (iface) {
+    var holder = globalThis[iface];
+    return holder && holder.prototype ? holder.prototype : globalThis.Event.prototype;
+  };
+
+  // Each event's own `isTrusted`, one getter for them all, as Chrome's [LegacyUnforgeable] field.
+  var isTrustedGetter = asNative(function () {
+    var state = eventFields.get(this);
+    return state ? state.isTrusted : undefined;
+  }, "get isTrusted");
+
+  var fieldGetters = Object.create(null);
+
+  var fieldGetter = function (field) {
+    if (!fieldGetters[field]) {
+      fieldGetters[field] = asNative(function () {
+        var state = eventFields.get(this);
+        return state ? state[field] : undefined;
+      }, "get " + field);
+    }
+    return fieldGetters[field];
+  };
+
+  // An interface's fields read the event's state, as prototype getters (Chrome's shape): those the
+  // capture recorded keep their place, and any it lacks are added.
+  var defineEventFields = function (holder, fields) {
+    if (!holder) return;
+
+    for (var index = 0; index < fields.length; index += 1) {
+      var field = fields[index];
+      var setter;
+
+      if (field === "returnValue") {
+        setter = asNative(function (value) {
+          var state = eventFields.get(this);
+          if (state && !value && state.cancelable && !state.passive) state.canceled = true;
+        }, "set returnValue");
+      } else if (field === "cancelBubble") {
+        setter = asNative(function (value) {
+          var state = eventFields.get(this);
+          if (state && value) state.stop = true;
+        }, "set cancelBubble");
+      }
+
+      try {
+        Object.defineProperty(holder, field, { get: fieldGetter(field), set: setter, enumerable: true, configurable: true });
+      } catch (error) {}
+    }
+  };
+
+  var COMMON_EVENT_FIELDS = [
+    "type", "bubbles", "cancelable", "composed", "defaultPrevented", "eventPhase", "timeStamp",
+    "target", "currentTarget", "srcElement", "returnValue", "cancelBubble",
+  ];
+
+  var definedOn = new WeakMap();
+
+  var ensureFields = function (iface, keys) {
+    var holder = eventProto(iface);
+    var done = definedOn.get(holder);
+
+    if (!done) {
+      done = Object.create(null);
+      definedOn.set(holder, done);
+    }
+
+    var missing = [];
+
+    for (var index = 0; index < keys.length; index += 1) {
+      if (!done[keys[index]]) {
+        done[keys[index]] = true;
+        missing.push(keys[index]);
+      }
+    }
+
+    if (missing.length) defineEventFields(holder, missing);
+  };
+
+  // A new event of `iface`: its state lives beside it (the prototype's getters read it), and its
+  // one own property is `isTrusted`.
+  var createEvent = function (iface, type, init, trusted) {
+    var made = Object.create(eventProto(iface));
+    var fields = {
+      type: String(type),
+      bubbles: false,
+      cancelable: false,
+      composed: false,
+      eventPhase: 0,
+      isTrusted: Boolean(trusted),
+      timeStamp: env.clock(),
+      target: null,
+      currentTarget: null,
+      srcElement: null,
+      canceled: false,
+      stop: false,
+      stopImmediate: false,
+      passive: false,
+      dispatching: false,
+      path: [],
+      initialized: true,
+    };
+
+    var defaults = eventDefaults[iface];
+    if (defaults) for (var key in defaults) fields[key] = Array.isArray(defaults[key]) ? [] : defaults[key];
+
+    if (init !== null && init !== undefined && (typeof init === "object" || typeof init === "function")) {
+      var members = trusted ? null : eventInitMembers(iface);
+
+      if (members) {
+        for (var at = 0; at < members.length; at += 1) {
+          var value = init[members[at]];
+          if (value !== undefined) fields[members[at]] = value;
+        }
+      } else {
+        var extra = [];
+
+        for (var given in init) {
+          if (!(given in fields)) extra.push(given);
+          fields[given] = init[given];
+        }
+
+        if (extra.length) ensureFields(iface, extra);
+      }
+
+      fields.bubbles = Boolean(fields.bubbles);
+      fields.cancelable = Boolean(fields.cancelable);
+      fields.composed = Boolean(fields.composed);
+    }
+
+    eventFields.set(made, fields);
+    env.overrides.set(made, fields);
+
+    Object.defineProperty(made, "isTrusted", { get: isTrustedGetter, set: undefined, enumerable: true, configurable: false });
+
+    return made;
+  };
+
+  env.createEvent = createEvent;
+
+  (function installEventPrototype() {
+    var proto = globalThis.Event && globalThis.Event.prototype;
+    if (!proto) return;
+
+    defineEventFields(proto, COMMON_EVENT_FIELDS);
+
+    patchGetter(proto, "defaultPrevented", function () {
+      var state = eventFields.get(this);
+      return state ? state.canceled : undefined;
+    });
+    patchGetter(proto, "returnValue", function () {
+      var state = eventFields.get(this);
+      return state ? !state.canceled : undefined;
+    });
+    patchGetter(proto, "cancelBubble", function () {
+      var state = eventFields.get(this);
+      return state ? state.stop : undefined;
+    });
+
+    patch(proto, "preventDefault", function preventDefault() {
+      var state = eventFields.get(this);
+      if (state && state.cancelable && !state.passive) state.canceled = true;
+    });
+    patch(proto, "stopPropagation", function stopPropagation() {
+      var state = eventFields.get(this);
+      if (state) state.stop = true;
+    });
+    patch(proto, "stopImmediatePropagation", function stopImmediatePropagation() {
+      var state = eventFields.get(this);
+      if (state) {
+        state.stop = true;
+        state.stopImmediate = true;
+      }
+    });
+    patch(proto, "composedPath", function composedPath() {
+      var state = eventFields.get(this);
+      return state && state.dispatching ? state.path.slice() : [];
+    });
+    patch(proto, "initEvent", function initEvent(type, bubbles, cancelable) {
+      var state = eventFields.get(this);
+      if (arguments.length < 1) throw env.hideFrames(new TypeError("Failed to execute 'initEvent' on 'Event': 1 argument required, but only 0 present."));
+      if (!state || state.dispatching) return;
+      state.type = String(type);
+      state.bubbles = Boolean(bubbles);
+      state.cancelable = Boolean(cancelable);
+      state.canceled = false;
+      state.stop = false;
+      state.stopImmediate = false;
+    });
+
+    for (var name in eventDefaults) ensureFields(name, Object.keys(eventDefaults[name]));
+  })();
 
   for (var eventIndex = 0; eventIndex < EVENT_CONSTRUCTORS.length; eventIndex += 1) {
     (function (name) {
-      if (typeof globalThis[name] !== "function") return;
-
-      var makeFields = function (type, init) {
-        var fields = {
-          type: String(type),
-          bubbles: false,
-          cancelable: false,
-          composed: false,
-          defaultPrevented: false,
-          eventPhase: 0,
-          isTrusted: false,
-          timeStamp: env.clock(),
-          target: null,
-          currentTarget: null,
-          srcElement: null,
-          returnValue: true,
-          cancelBubble: false,
-          NONE: 0,
-          CAPTURING_PHASE: 1,
-          AT_TARGET: 2,
-          BUBBLING_PHASE: 3,
-        };
-
-        var defaults = eventDefaults[name];
-        if (defaults) for (var key in defaults) fields[key] = defaults[key];
-
-        var members = eventInitMembers(name);
-
-        if (init !== null && init !== undefined && (typeof init === "object" || typeof init === "function")) {
-          if (members) {
-            for (var at = 0; at < members.length; at += 1) {
-              var value = init[members[at]];
-              if (value !== undefined) fields[members[at]] = value;
-            }
-          } else {
-            for (var given in init) fields[given] = init[given];
-          }
-        }
-
-        return fields;
-      };
+      if (typeof globalThis[name] !== "function" || globalThis[name].__wreEventShell) return;
 
       var Original = globalThis[name];
 
@@ -789,22 +1288,12 @@
           throw env.hideFrames(new TypeError("Failed to construct '" + name + "': Please use the 'new' operator, this DOM object constructor cannot be called as a function."));
         }
 
-        if (type === undefined) {
+        if (arguments.length === 0) {
           throw env.hideFrames(new TypeError("Failed to construct '" + name + "': 1 argument required, but only 0 present."));
         }
 
-        var made = Object.create(Original.prototype);
-        var fields = makeFields(type, init);
-
-        env.overrides.set(made, fields);
-        eventFields.set(made, fields);
-
-        try {
-          Object.defineProperty(made, "preventDefault", { value: asNative(function preventDefault() { fields.defaultPrevented = Boolean(fields.cancelable); }, "preventDefault"), writable: true, enumerable: false, configurable: true });
-          Object.defineProperty(made, "stopPropagation", { value: asNative(function stopPropagation() { fields.cancelBubble = true; }, "stopPropagation"), writable: true, enumerable: false, configurable: true });
-          Object.defineProperty(made, "stopImmediatePropagation", { value: asNative(function stopImmediatePropagation() { fields.cancelBubble = true; }, "stopImmediatePropagation"), writable: true, enumerable: false, configurable: true });
-        } catch (error) {}
-
+        var made = createEvent(name, type, init, false);
+        if (new.target !== Shell) Object.setPrototypeOf(made, new.target.prototype);
         return made;
       };
 
@@ -819,74 +1308,369 @@
     })(EVENT_CONSTRUCTORS[eventIndex]);
   }
 
+  // DOMException, as Chrome's: no own fields, its name, message and code read through prototype
+  // getters, its code taken from the legacy table by name. One the platform throws also carries an
+  // own `stack` accessor (see `env.domException`).
+  var DOM_CODES = {
+    IndexSizeError: 1, HierarchyRequestError: 3, WrongDocumentError: 4, InvalidCharacterError: 5,
+    NoModificationAllowedError: 7, NotFoundError: 8, NotSupportedError: 9, InUseAttributeError: 10,
+    InvalidStateError: 11, SyntaxError: 12, InvalidModificationError: 13, NamespaceError: 14,
+    InvalidAccessError: 15, TypeMismatchError: 17, SecurityError: 18, NetworkError: 19, AbortError: 20,
+    URLMismatchError: 21, QuotaExceededError: 22, TimeoutError: 23, InvalidNodeTypeError: 24, DataCloneError: 25,
+  };
+
+  var exceptionState = new WeakMap();
+  env.exceptionState = exceptionState;
+
+  (function installDomException() {
+    var Original = globalThis.DOMException;
+    if (typeof Original !== "function" || !Original.prototype) return;
+
+    var proto = Original.prototype;
+
+    var build = function (message, name, target) {
+      var made = Object.create(target || proto);
+      var named = name === undefined ? "Error" : String(name);
+      exceptionState.set(made, { message: message === undefined ? "" : String(message), name: named, code: DOM_CODES[named] || 0 });
+      return made;
+    };
+
+    var Shell = function DOMException(message, name) {
+      if (new.target === undefined) {
+        throw env.hideFrames(new TypeError("Failed to construct 'DOMException': Please use the 'new' operator, this DOM object constructor cannot be called as a function."));
+      }
+      return build(message, name, new.target.prototype);
+    };
+
+    asNative(Shell, "DOMException");
+
+    ["message", "name", "code"].forEach(function (field) {
+      patchGetter(proto, field, function () {
+        var state = exceptionState.get(this);
+        if (!state) throw env.hideFrames(new TypeError("Illegal invocation"));
+        return state[field];
+      });
+    });
+
+    try {
+      Object.defineProperty(Shell, "prototype", { value: proto, writable: false, enumerable: false, configurable: false });
+      Object.defineProperty(Shell, "length", { value: 0, configurable: true });
+      for (var legacy of Object.getOwnPropertyNames(Original)) {
+        if (legacy === "prototype" || legacy === "length" || legacy === "name") continue;
+        Object.defineProperty(Shell, legacy, Object.getOwnPropertyDescriptor(Original, legacy));
+      }
+      Object.defineProperty(proto, "constructor", { value: Shell, writable: true, enumerable: false, configurable: true });
+      Object.defineProperty(globalThis, "DOMException", { value: Shell, writable: true, enumerable: false, configurable: true });
+    } catch (error) {}
+
+    // One the platform throws: it carries the stack of where it was thrown, as an own accessor.
+    domException = function (message, name) {
+      var made = build(message, name);
+      var trace = env.hideFrames(new Error(String(message)));
+      var stack = String(trace.stack).replace(/^Error/, String(name));
+      var held = { value: stack };
+      Object.defineProperty(made, "stack", {
+        get: asNative(function () { return held.value; }, "get stack"),
+        set: asNative(function (value) { held.value = value; }, "set stack"),
+        enumerable: false,
+        configurable: true,
+      });
+      return made;
+    };
+
+    env.domException = domException;
+  })();
+
+  (function installAbort() {
+    var Controller = globalThis.AbortController;
+    var Signal = globalThis.AbortSignal;
+    if (typeof Controller !== "function" || typeof Signal !== "function") return;
+
+    var controllers = new WeakMap();
+    env.abortControllers = controllers;
+
+    var ControllerShell = function AbortController() {
+      if (new.target === undefined) {
+        throw env.hideFrames(new TypeError("Failed to construct 'AbortController': Please use the 'new' operator, this DOM object constructor cannot be called as a function."));
+      }
+      var made = Object.create(new.target.prototype);
+      controllers.set(made, makeSignal());
+      return made;
+    };
+
+    asNative(ControllerShell, "AbortController");
+
+    patchGetter(Controller.prototype, "signal", function () {
+      var signal = controllers.get(this);
+      if (!signal) throw env.hideFrames(new TypeError("Illegal invocation"));
+      return signal;
+    });
+    patch(Controller.prototype, "abort", function abort(reason) {
+      var signal = controllers.get(this);
+      if (!signal) throw env.hideFrames(new TypeError("Illegal invocation"));
+      abortSignal(signal, reason);
+    });
+
+    var stateOf = function (signal) {
+      var state = signalState.get(signal);
+      if (!state) throw env.hideFrames(new TypeError("Illegal invocation"));
+      return state;
+    };
+
+    patchGetter(Signal.prototype, "aborted", function () { return stateOf(this).aborted; });
+    patchGetter(Signal.prototype, "reason", function () { return stateOf(this).reason; });
+    patch(Signal.prototype, "throwIfAborted", function throwIfAborted() {
+      var state = stateOf(this);
+      if (state.aborted) throw state.reason;
+    });
+
+    var SignalShell = function AbortSignal() {
+      throw env.hideFrames(new TypeError("Failed to construct 'AbortSignal': Illegal constructor"));
+    };
+
+    asNative(SignalShell, "AbortSignal");
+
+    patch(SignalShell, "abort", function abort(reason) {
+      var signal = makeSignal();
+      abortSignal(signal, reason);
+      return signal;
+    });
+    patch(SignalShell, "timeout", function timeout(ms) {
+      if (arguments.length < 1) throw env.hideFrames(new TypeError("Failed to execute 'timeout' on 'AbortSignal': 1 argument required, but only 0 present."));
+      var signal = makeSignal();
+      env.later(function () { abortSignal(signal, domException("signal timed out", "TimeoutError")); }, Math.max(0, Number(ms) || 0));
+      return signal;
+    });
+    patch(SignalShell, "any", function any(signals) {
+      var signal = makeSignal();
+      var list = Array.from(signals || []);
+
+      for (var index = 0; index < list.length; index += 1) {
+        var state = stateOf(list[index]);
+        if (state.aborted) {
+          abortSignal(signal, state.reason);
+          return signal;
+        }
+      }
+
+      list.forEach(function (source) {
+        stateOf(source).algorithms.push(function () { abortSignal(signal, stateOf(source).reason); });
+      });
+
+      return signal;
+    });
+
+
+    try {
+      Object.defineProperty(ControllerShell, "prototype", { value: Controller.prototype, writable: false, enumerable: false, configurable: false });
+      Object.defineProperty(ControllerShell, "length", { value: 0, configurable: true });
+      Object.defineProperty(Controller.prototype, "constructor", { value: ControllerShell, writable: true, enumerable: false, configurable: true });
+      Object.defineProperty(globalThis, "AbortController", { value: ControllerShell, writable: true, enumerable: false, configurable: true });
+      Object.defineProperty(SignalShell, "prototype", { value: Signal.prototype, writable: false, enumerable: false, configurable: false });
+      Object.defineProperty(SignalShell, "length", { value: 0, configurable: true });
+      Object.defineProperty(Signal.prototype, "constructor", { value: SignalShell, writable: true, enumerable: false, configurable: true });
+      Object.defineProperty(globalThis, "AbortSignal", { value: SignalShell, writable: true, enumerable: false, configurable: true });
+    } catch (error) {}
+  })();
+
+  // Blobs and files hold their bytes (a Uint8Array) and type beside them; everything that reads a
+  // blob (FileReader, Response, object URLs, workers, streams) reads it through `env.blobBytes`.
+  var blobState = new WeakMap();
+
+  var blobType = function (type) {
+    var text = type === undefined ? "" : String(type);
+    return /^[\x20-\x7e]*$/.test(text) ? text.toLowerCase() : "";
+  };
+
+  var partBytes = function (part, endings) {
+    if (part !== null && typeof part === "object") {
+      if (blobState.has(part)) return blobState.get(part).bytes;
+      if (part instanceof ArrayBuffer) return new Uint8Array(part.slice(0));
+      if (ArrayBuffer.isView(part)) return new Uint8Array(part.buffer.slice(part.byteOffset, part.byteOffset + part.byteLength));
+    }
+
+    var text = String(part);
+    if (endings === "native") text = text.replace(/\r\n|\r/g, "\n");
+    return utf8Encode(text);
+  };
+
+  var joinBytes = function (chunks) {
+    var size = 0;
+    for (var index = 0; index < chunks.length; index += 1) size += chunks[index].length;
+    var out = new Uint8Array(size);
+    var at = 0;
+    for (var next = 0; next < chunks.length; next += 1) {
+      out.set(chunks[next], at);
+      at += chunks[next].length;
+    }
+    return out;
+  };
+
+  env.joinBytes = joinBytes;
+  env.utf8Encode = utf8Encode;
+
+  var blobOf = function (holder, method) {
+    var state = blobState.get(holder);
+    if (!state) throw env.hideFrames(new TypeError("Illegal invocation"));
+    return state;
+  };
+
+  // A new Blob (or File) holding `bytes`, made as the page's own constructor would make it.
+  var makeBlob = function (bytes, type, file) {
+    var made = Object.create((file ? globalThis.File : globalThis.Blob).prototype);
+    var state = { bytes: bytes, type: blobType(type) };
+    if (file) {
+      state.name = String(file.name);
+      state.lastModified = file.lastModified;
+    }
+    blobState.set(made, state);
+    return made;
+  };
+
+  env.makeBlob = makeBlob;
+  env.blobBytes = function (blob) {
+    var state = blobState.get(blob);
+    return state ? state.bytes : null;
+  };
+  env.blobTypeOf = function (blob) {
+    var state = blobState.get(blob);
+    return state ? state.type : null;
+  };
+
   (function installBlob() {
     var shape = traits.blob;
     var Original = globalThis.Blob;
 
-    if (!shape || typeof Original !== "function" || !Original.prototype) return;
+    if (typeof Original !== "function" || !Original.prototype) return;
 
-    var Shell = function (parts, options) {
-      if (new.target === undefined) {
-        throw env.hideFrames(new TypeError("Failed to construct 'Blob': Please use the 'new' operator, this DOM object constructor cannot be called as a function."));
-      }
-
+    var readParts = function (parts, options, where) {
       if (parts !== undefined) {
         var iterator = parts === null ? undefined : parts[Symbol.iterator];
 
         if (typeof iterator !== "function") {
-          throw env.hideFrames(new TypeError(shape.thrown ? shape.thrown.message : "Failed to construct 'Blob': The object must have a callable @@iterator property."));
+          throw env.hideFrames(new TypeError(shape && shape.thrown ? shape.thrown.message.replace("'Blob'", "'" + where + "'") : "Failed to construct '" + where + "': The object must have a callable @@iterator property."));
         }
       }
+
+      var type = "";
+      var endings = "transparent";
 
       if (options !== null && options !== undefined && (typeof options === "object" || typeof options === "function")) {
-        var members = shape.options || [];
+        var members = (shape && shape.options) || ["g:endings", "g:type"];
 
         for (var index = 0; index < members.length; index += 1) {
-          if (members[index].indexOf("g:") === 0) void options[members[index].slice(2)];
+          if (members[index].indexOf("g:") !== 0) continue;
+          var member = members[index].slice(2);
+          var value = options[member];
+          if (member === "type" && value !== undefined) type = value;
+          if (member === "endings" && value !== undefined) {
+            endings = String(value);
+            if (endings !== "transparent" && endings !== "native") {
+              throw env.hideFrames(new TypeError("Failed to construct '" + where + "': Failed to read the 'endings' property from 'BlobPropertyBag': The provided value '" + endings + "' is not a valid enum value of type EndingType."));
+            }
+          }
         }
+      } else if (options !== undefined && options !== null) {
+        throw env.hideFrames(new TypeError("Failed to construct '" + where + "': The provided value is not of type 'BlobPropertyBag'."));
       }
 
-      return Reflect.construct(Original, arguments, new.target);
+      var chunks = [];
+      if (parts !== undefined && parts !== null) for (var part of parts) chunks.push(partBytes(part, endings));
+      return { bytes: joinBytes(chunks), type: type };
+    };
+
+    var Shell = function Blob(parts, options) {
+      if (new.target === undefined) {
+        throw env.hideFrames(new TypeError("Failed to construct 'Blob': Please use the 'new' operator, this DOM object constructor cannot be called as a function."));
+      }
+
+      var read = readParts(parts, options, "Blob");
+      var made = makeBlob(read.bytes, read.type);
+      if (new.target !== Shell) Object.setPrototypeOf(made, new.target.prototype);
+      return made;
     };
 
     asNative(Shell, "Blob");
 
+    var proto = Original.prototype;
+
+    patchGetter(proto, "size", function () { return blobOf(this).bytes.length; });
+    patchGetter(proto, "type", function () { return blobOf(this).type; });
+
+    patch(proto, "slice", function slice(start, end, contentType) {
+      var bytes = blobOf(this).bytes;
+      var size = bytes.length;
+      var clamp = function (value, fallback) {
+        if (value === undefined) return fallback;
+        var at = Math.trunc(Number(value)) || 0;
+        return at < 0 ? Math.max(size + at, 0) : Math.min(at, size);
+      };
+      var from = clamp(start, 0);
+      var to = clamp(end, size);
+      return makeBlob(bytes.slice(from, Math.max(from, to)), contentType === undefined ? "" : contentType);
+    });
+
+    // Reading a blob completes as a task, as Chrome's blob reads do.
+    var settleLater = function (value) {
+      return new Promise(function (resolve) { env.later(function () { resolve(value()); }, 0); });
+    };
+
+    patch(proto, "text", function text() {
+      var bytes = blobOf(this).bytes;
+      return settleLater(function () { return env.decodeUtf8(bytes); });
+    });
+    patch(proto, "arrayBuffer", function arrayBuffer() {
+      var bytes = blobOf(this).bytes;
+      return settleLater(function () { return bytes.slice(0).buffer; });
+    });
+    if (typeof proto.bytes === "function") {
+      patch(proto, "bytes", function bytes() {
+        var held = blobOf(this).bytes;
+        return settleLater(function () { return held.slice(0); });
+      });
+    }
+
     try {
-      Object.defineProperty(Shell, "prototype", { value: Original.prototype, writable: false, enumerable: false, configurable: false });
+      Object.defineProperty(Shell, "prototype", { value: proto, writable: false, enumerable: false, configurable: false });
       Object.defineProperty(Shell, "length", { value: 0, configurable: true });
-      Object.defineProperty(Original.prototype, "constructor", { value: Shell, writable: true, enumerable: false, configurable: true });
+      Object.defineProperty(proto, "constructor", { value: Shell, writable: true, enumerable: false, configurable: true });
       Object.defineProperty(globalThis, "Blob", { value: Shell, writable: true, enumerable: false, configurable: true });
     } catch (error) {}
+
+    var OriginalFile = globalThis.File;
+    if (typeof OriginalFile !== "function" || !OriginalFile.prototype) return;
+
+    var FileShell = function File(parts, name, options) {
+      if (new.target === undefined) {
+        throw env.hideFrames(new TypeError("Failed to construct 'File': Please use the 'new' operator, this DOM object constructor cannot be called as a function."));
+      }
+      if (arguments.length < 2) {
+        throw env.hideFrames(new TypeError("Failed to construct 'File': 2 arguments required, but only " + arguments.length + " present."));
+      }
+
+      var read = readParts(parts, options, "File");
+      var modified = options && options.lastModified !== undefined ? Number(options.lastModified) : Date.now();
+      var made = makeBlob(read.bytes, read.type, { name: name, lastModified: Math.trunc(modified) || 0 });
+      if (new.target !== FileShell) Object.setPrototypeOf(made, new.target.prototype);
+      return made;
+    };
+
+    asNative(FileShell, "File");
+
+    var fileProto = OriginalFile.prototype;
+
+    patchGetter(fileProto, "name", function () { return blobOf(this).name; });
+    patchGetter(fileProto, "lastModified", function () { return blobOf(this).lastModified; });
+    patchGetter(fileProto, "lastModifiedDate", function () { return new Date(blobOf(this).lastModified); });
+    patchGetter(fileProto, "webkitRelativePath", function () { blobOf(this); return ""; });
+
+    try {
+      Object.defineProperty(FileShell, "prototype", { value: fileProto, writable: false, enumerable: false, configurable: false });
+      Object.defineProperty(FileShell, "length", { value: 2, configurable: true });
+      Object.defineProperty(fileProto, "constructor", { value: FileShell, writable: true, enumerable: false, configurable: true });
+      Object.defineProperty(globalThis, "File", { value: FileShell, writable: true, enumerable: false, configurable: true });
+    } catch (error) {}
   })();
-
-  var COMMON_EVENT_FIELDS = [
-    "type", "bubbles", "cancelable", "composed", "defaultPrevented", "eventPhase", "isTrusted",
-    "timeStamp", "target", "currentTarget", "srcElement", "returnValue", "cancelBubble",
-  ];
-
-  var defineEventFields = function (name, fields) {
-    var holder = globalThis[name] && globalThis[name].prototype;
-    if (!holder) return;
-
-    for (var index = 0; index < fields.length; index += 1) {
-      (function (field) {
-        try {
-          Object.defineProperty(holder, field, {
-            get: asNative(function () {
-              var state = eventFields.get(this);
-              return state ? state[field] : undefined;
-            }, "get " + field),
-            enumerable: true,
-            configurable: true,
-          });
-        } catch (error) {}
-      })(fields[index]);
-    }
-  };
-
-  defineEventFields("Event", COMMON_EVENT_FIELDS);
-
-  for (var defaultsName in eventDefaults) defineEventFields(defaultsName, Object.keys(eventDefaults[defaultsName]));
 
   env.eventFields = eventFields;
 
@@ -940,11 +1724,30 @@
 
   var styleOwners = new WeakMap();
 
+  // Each style object's parser, so setting the style attribute re-reads the declarations.
+  var styleParsers = new WeakMap();
+
   var makeStyle = function (owner) {
     var values = Object.create(null);
     var order = [];
 
-    var write = function (key, value) {
+    var reparse = function (text) {
+      order.length = 0;
+      for (var name in values) delete values[name];
+      var declarations = String(text).split(";");
+      for (var index = 0; index < declarations.length; index += 1) {
+        var pair = declarations[index].split(":");
+        if (pair.length < 2) continue;
+        write(pair[0].trim(), pair.slice(1).join(":").trim(), true);
+      }
+    };
+
+    // A declaration changed: the element's style attribute follows (an observer hears it).
+    var reflect = function () {
+      if (owner && nodeState(owner)) setAttr(owner, "style", cssText(), true);
+    };
+
+    var write = function (key, value, quiet) {
       var name = dashedName(key);
       var text = value === null || value === undefined ? "" : String(value);
 
@@ -952,6 +1755,7 @@
         if (name in values) {
           delete values[name];
           order.splice(order.indexOf(name), 1);
+          if (!quiet) reflect();
         }
 
         return;
@@ -959,6 +1763,7 @@
 
       if (!(name in values)) order.push(name);
       values[name] = text;
+      if (!quiet) reflect();
     };
 
     var cssText = function () {
@@ -980,7 +1785,7 @@
       item: asNative(function item(index) { return order[Number(index)] || ""; }, "item"),
     };
 
-    return new Proxy(members, {
+    var style = new Proxy(members, {
       get: function (target, key) {
         if (key === "length") return order.length;
         if (key === "cssText") return cssText();
@@ -992,26 +1797,8 @@
       },
       set: function (target, key, value) {
         if (key === "cssText") {
-          order.length = 0;
-          for (var name in values) delete values[name];
-
-          try {
-            var styleOwner = owner;
-            if (styleOwner) {
-              var attrs = attributesOf(styleOwner);
-              attrs.style = String(value);
-              env.syncAttributes(styleOwner);
-            }
-          } catch (error) {}
-
-          var declarations = String(value).split(";");
-
-          for (var index = 0; index < declarations.length; index += 1) {
-            var pair = declarations[index].split(":");
-            if (pair.length < 2) continue;
-            write(pair[0].trim(), pair.slice(1).join(":").trim());
-          }
-
+          reparse(value);
+          reflect();
           return true;
         }
 
@@ -1058,6 +1845,9 @@
         return { value: values[dashedName(key)] || "", writable: true, enumerable: camelEnumerable[key] === true, configurable: true };
       },
     });
+
+    styleParsers.set(style, reparse);
+    return style;
   };
 
   var canvasSample = sampleOf("document.createElement(canvas)");
@@ -1119,7 +1909,10 @@
   var elementCount = 0;
   var canvasCount = 0;
 
-  var elementState = new WeakMap();
+  // Every node's state, in one table the window and its frames share (they are realms of one
+  // isolate): a node one document made can be put in another, which adopts it, as in Chrome.
+  var elementState = globalThis.__NODES || new WeakMap();
+  delete globalThis.__NODES;
 
   var nodeState = function (node) {
     try {
@@ -1133,7 +1926,7 @@
 
   var NODE_FIELDS = [
     "nodeName", "nodeType", "parentNode", "parentElement", "firstChild", "lastChild", "nextSibling",
-    "previousSibling", "ownerDocument", "textContent", "childNodes",
+    "previousSibling", "ownerDocument", "childNodes",
   ];
 
   var ELEMENT_FIELDS = [
@@ -1159,14 +1952,18 @@
           Object.defineProperty(prototype, field, {
             get: asNative(function () {
               var state = nodeState(this);
+              if (state && field === "childNodes") return childNodesOf(this);
+              if (state && field === "children") return childrenOf(this);
               if (state) return state[field];
               return inherited(previous, this);
             }, "get " + field),
-            set: asNative(function (value) {
+            // Only what Chrome lets a page set (id, className, style, innerText) has a setter.
+            set: previous && previous.set ? asNative(function (value) {
               var state = nodeState(this);
-              if (state) state[field] = value;
-              else if (previous && previous.set) previous.set.call(this, value);
-            }, "set " + field),
+              if (state && (field === "id" || field === "className") && state.nodeType === 1) setAttr(this, field === "id" ? "id" : "class", String(value));
+              else if (state) state[field] = value;
+              else previous.set.call(this, value);
+            }, "set " + field) : undefined,
             enumerable: previous ? previous.enumerable : true,
             configurable: true,
           });
@@ -1178,7 +1975,28 @@
   var layoutTable = null;
   var layoutMisses = [];
 
-  var layoutKey = function (element) {
+  // The markup or text a script last gave an element whole (innerHTML or textContent), as it gave
+  // it: the layout the capture recorded is keyed by that source, which re-serialising the parsed
+  // children would not always reproduce (whitespace, attribute quoting). Any other change to the
+  // children forgets it.
+  var forgetLayoutSource = function (node) {
+    var state = nodeState(node);
+    if (state) state.layoutSource = undefined;
+  };
+
+  var layoutTexts = function (element, state) {
+    var texts = [];
+    if (typeof state.layoutSource === "string") texts.push(state.layoutSource);
+    if (state.childNodes && state.childNodes.length) {
+      texts.push(serializeChildren(element, 0, Boolean(RAW_TEXT_TAGS[state.tag])));
+      texts.push(textOf(element));
+    }
+    if (state.html) texts.push(state.html);
+    if (!texts.length) texts.push("");
+    return texts;
+  };
+
+  var layoutKey = function (element, text) {
     var state = nodeState(element);
     if (!state) return null;
 
@@ -1205,23 +2023,33 @@
       if (typeof element.value === "string") value = element.value.slice(0, 80);
     } catch (error) {}
 
-    var text = String(state.html || state.textContent || "").slice(0, 400);
-    return state.tag + "|" + css + "|" + attrs.join(" ") + "|" + value + "|" + text;
+    return state.tag + "|" + css + "|" + attrs.join(" ") + "|" + value + "|" + String(text).slice(0, 400);
   };
 
   var noteLayout = function (key) {
     if (layoutMisses.length < 400 && layoutMisses.indexOf(key) === -1) layoutMisses.push(key);
   };
 
+  // The layout the capture recorded for an element like this one, or null (noted as a miss).
+  var recordedLayout = function (element) {
+    var state = nodeState(element);
+    if (!state) return null;
+
+    if (!layoutTable) layoutTable = env.layout || null;
+    var texts = layoutTexts(element, state);
+
+    for (var index = 0; index < texts.length; index += 1) {
+      var found = layoutTable ? layoutTable[layoutKey(element, texts[index])] : null;
+      if (found) return found;
+    }
+
+    noteLayout(layoutKey(element, texts[0]));
+    return null;
+  };
+
   env.boxOf = function (element) {
     var empty = { x: 0, y: 0, width: 0, height: 0 };
-    var key = layoutKey(element);
-    if (!key) return empty;
-
-    noteLayout(key);
-    if (!layoutTable) layoutTable = env.layout || null;
-    var found = layoutTable ? layoutTable[key] : null;
-
+    var found = recordedLayout(element);
     if (!found) return empty;
 
     return { x: found.x || 0, y: found.y || 0, width: found.width || 0, height: found.height || 0 };
@@ -1252,14 +2080,10 @@
       }
     }
 
-    var key = layoutKey(element);
-    if (!key) return 0;
-
-    noteLayout(key);
-    if (!layoutTable) layoutTable = env.layout || null;
-    var found = layoutTable ? layoutTable[key] : null;
-
     var state = nodeState(element);
+    if (!state) return 0;
+    var found = recordedLayout(element);
+
     var stacks = state && (state.tag === "body" || state.tag === "html");
 
     if (found && !(stacks && !found[which] && (which === "clientHeight" || which === "scrollHeight"))) {
@@ -1396,6 +2220,8 @@
           Object.defineProperty(prototype, field, {
             get: asNative(function () {
               var state = nodeState(this);
+              if (state && field === "childNodes") return childNodesOf(this);
+              if (state && field === "children") return childrenOf(this);
               if (state) return state[field];
               return inherited(previous, this);
             }, "get " + field),
@@ -1583,6 +2409,7 @@
 
       Object.defineProperty(prototype, "contentDocument", {
         get: asNative(function () {
+          if (env.opaqueFrame(this)) return null;
           var frame = this.contentWindow;
           return frame ? frame.document : null;
         }, "get contentDocument"),
@@ -1663,10 +2490,12 @@
         set: asNative(function (value) {
           var state = nodeState(this);
           if (!state) return;
-          state.childNodes.length = 0;
-          state.children.length = 0;
-          state.html = String(value);
-          env.parseHtml(value, this);
+          var holder = globalThis.document.createDocumentFragment();
+          env.parseHtml(value === null ? "" : String(value), holder);
+          state.html = "";
+          replaceAll(this, childListOf(holder).slice());
+          state.layoutSource = value === null ? "" : String(value);
+          env.textChanged(this);
         }, "set innerHTML"),
         enumerable: true,
         configurable: true,
@@ -1680,18 +2509,20 @@
   var VALUE_TAGS = ["input", "textarea", "select", "option", "button", "output", "progress", "meter", "param", "data", "li"];
 
   var REFLECTED = {
-    input: ["type", "name", "size#20", "placeholder", "min", "max", "step", "pattern", "accept", "alt", "src", "width#0", "height#0", "maxLength:maxlength", "minLength:minlength", "autocomplete", "list", "multiple?", "disabled?", "required?", "readOnly?readonly"],
+    input: ["type", "name", "size#20", "placeholder", "min", "max", "step", "pattern", "accept", "alt", "width#0", "height#0", "maxLength:maxlength", "minLength:minlength", "autocomplete", "list", "multiple?", "disabled?", "required?", "readOnly?readonly"],
     textarea: ["name", "rows#2", "cols#20", "placeholder", "maxLength:maxlength", "disabled?", "readOnly?readonly", "required?"],
     select: ["name", "size", "multiple?", "disabled?", "required?"],
     button: ["type", "name", "disabled?"],
-    img: ["src", "alt", "width#0", "height#0", "loading", "srcset", "sizes", "crossOrigin:crossorigin", "referrerPolicy:referrerpolicy"],
-    video: ["src", "width#0", "height#0", "poster", "preload", "controls?", "loop?", "muted?", "autoplay?", "playsInline?playsinline"],
-    audio: ["src", "preload", "controls?", "loop?", "muted?", "autoplay?"],
-    iframe: ["src", "srcdoc", "name", "width", "height", "sandbox", "allow", "loading", "referrerPolicy:referrerpolicy"],
-    a: ["href", "target", "rel", "download", "ping", "hreflang", "type"],
-    script: ["src", "type", "integrity", "crossOrigin:crossorigin", "referrerPolicy:referrerpolicy", "async?", "defer?", "noModule?nomodule"],
-    link: ["href", "rel", "media", "type", "as", "integrity", "crossOrigin:crossorigin"],
-    form: ["name", "action", "method", "target", "enctype", "autocomplete", "noValidate?novalidate"],
+    // src, width/height, loading, crossOrigin, preload, muted and the like are the element module's.
+    img: ["alt", "srcset", "sizes", "referrerPolicy:referrerpolicy", "useMap:usemap", "isMap?ismap"],
+    video: ["width#0", "height#0", "controls?", "loop?", "autoplay?", "playsInline?playsinline"],
+    audio: ["controls?", "loop?", "autoplay?"],
+    iframe: ["name", "width", "height", "allow", "referrerPolicy:referrerpolicy"],
+    // URL attributes (a href, form action, input src, ...) are the element module's: resolved.
+    a: ["target", "rel", "download", "ping", "hreflang", "type"],
+    script: ["type", "integrity", "referrerPolicy:referrerpolicy", "defer?", "noModule?nomodule", "charset", "event", "htmlFor:for"],
+    link: ["rel", "media", "type", "as", "integrity", "hreflang", "sizes"],
+    form: ["name", "method", "target", "enctype", "autocomplete", "noValidate?novalidate"],
     option: ["label", "disabled?"],
     canvas: [],
   };
@@ -1744,12 +2575,11 @@
               if (!state) return;
 
               if (boolean) {
-                if (value) state.attrs[attribute] = "";
-                else delete state.attrs[attribute];
+                setAttr(this, attribute, value ? "" : null);
                 return;
               }
 
-              state.attrs[attribute] = String(value);
+              setAttr(this, attribute, String(value));
             }, "set " + property),
             enumerable: previous ? previous.enumerable : true,
             configurable: true,
@@ -1775,6 +2605,7 @@
       installMetrics(elementProto || tagPrototype, ["clientWidth", "clientHeight", "scrollWidth", "scrollHeight"]);
       installMetrics(htmlProto || tagPrototype, ["offsetWidth", "offsetHeight", "offsetLeft", "offsetTop"]);
       installMarkup(elementProto || tagPrototype);
+      installText(nodeProto || tagPrototype);
     }
 
     if (!tagPrototype || perTagInstalled.indexOf(tagPrototype) !== -1) return;
@@ -1823,7 +2654,7 @@
     return Object.prototype.hasOwnProperty.call(attributesOf(node), key);
   };
 
-  var makeElement = function (tag) {
+  var makeElement = function (tag, owner) {
     var name = String(tag).toLowerCase();
     var prototype = prototypeFor(name);
     var element = Object.create(prototype);
@@ -1856,7 +2687,10 @@
       lastChild: null,
       nextSibling: null,
       previousSibling: null,
-      ownerDocument: document,
+      ownerDocument: owner || document,
+      namespaceURI: "http://www.w3.org/1999/xhtml",
+      prefix: null,
+      attrNS: {},
       textContent: "",
       value: "",
       outerHTML: "",
@@ -1930,47 +2764,184 @@
     if (args.length > 1) element.value = String(args[1]);
   });
 
-  var srcdocValues = new WeakMap();
-  var iframePrototype = prototypeFor("iframe");
-
-  if (iframePrototype) {
-    try {
-      Object.defineProperty(iframePrototype, "srcdoc", {
-        get: asNative(function () {
-          return srcdocValues.has(this) ? srcdocValues.get(this) : "";
-        }, "get srcdoc"),
-        set: asNative(function (value) {
-          srcdocValues.set(this, String(value));
-        }, "set srcdoc"),
-        enumerable: true,
-        configurable: true,
-      });
-    } catch (error) {}
-  }
-
-  var listOf = function (items, brand) {
-    var holder = globalThis[brand] && globalThis[brand].prototype ? Object.create(globalThis[brand].prototype) : [];
-
-    if (holder === items) return items;
-
-    for (var index = 0; index < items.length; index += 1) {
-      try {
-        Object.defineProperty(holder, index, { value: items[index], enumerable: true, configurable: true });
-      } catch (error) {}
-    }
-
-    try {
-      Object.defineProperty(holder, "length", { value: items.length, enumerable: false, configurable: true });
-    } catch (error) {}
-
-    if (brand === "NodeList") {
-      try {
-        Object.defineProperty(holder, Symbol.iterator, { value: Array.prototype[Symbol.iterator], enumerable: false, configurable: true, writable: true });
-      } catch (error) {}
-    }
-
-    return holder;
+  // NodeList and HTMLCollection as Chrome's: views whose indexed (and, for collections, id/name)
+  // members are own properties read through to the items they show, live when the items are
+  // (childNodes, children), with `length`, `item` and `namedItem` on the prototype and the very
+  // functions of Array.prototype as forEach/keys/values/entries/@@iterator.
+  var listItems = new WeakMap();
+  var listContents = function (view) {
+    var items = listItems.get(view);
+    if (!items) throw env.hideFrames(new TypeError("Illegal invocation"));
+    return items();
   };
+  var listLength = function (view) { return listContents(view).length; };
+  var NAMED_BRANDS = { HTMLCollection: true, HTMLFormControlsCollection: true, HTMLOptionsCollection: true, HTMLAllCollection: true };
+  var INDEX = /^(0|[1-9][0-9]*)$/;
+
+  var isIndex = function (key) {
+    return typeof key === "string" && INDEX.test(key) && Number(key) < 4294967295;
+  };
+
+  var namedIn = function (items) {
+    var names = [];
+    for (var index = 0; index < items.length; index += 1) {
+      var state = nodeState(items[index]);
+      if (!state || state.nodeType !== 1) continue;
+      var id = state.attrs && state.attrs.id;
+      if (id && names.indexOf(id) === -1) names.push(id);
+      var name = state.attrs && state.attrs.name;
+      if (name && names.indexOf(name) === -1) names.push(name);
+    }
+    return names;
+  };
+
+  var namedItem = function (items, key) {
+    for (var index = 0; index < items.length; index += 1) {
+      var state = nodeState(items[index]);
+      if (state && state.nodeType === 1 && state.attrs && (state.attrs.id === key || state.attrs.name === key)) return items[index];
+    }
+    return null;
+  };
+
+  // `naming` (keys, find) names members by something other than id and name (NamedNodeMap's
+  // attribute names).
+  var makeCollection = function (brand, items, naming) {
+    var holder = globalThis[brand] && globalThis[brand].prototype;
+    if (!holder) return items().slice();
+
+    var named = Boolean(naming || NAMED_BRANDS[brand]);
+    var namesOf = naming ? function (list) { return naming.keys(list); } : namedIn;
+    var lookup = naming ? function (list, key) { return naming.find(list, key); } : namedItem;
+    var target = Object.create(holder);
+    var shadowed = function (key) { return key in holder; };
+
+    var view = new Proxy(target, {
+      get: function (base, key, receiver) {
+        if (isIndex(key)) return items()[Number(key)];
+        if (named && typeof key === "string" && !shadowed(key)) {
+          var found = lookup(items(), key);
+          if (found) return found;
+        }
+        return Reflect.get(base, key, receiver);
+      },
+      has: function (base, key) {
+        if (isIndex(key)) return Number(key) < items().length;
+        if (named && typeof key === "string" && lookup(items(), key)) return true;
+        return Reflect.has(base, key);
+      },
+      ownKeys: function (base) {
+        var list = items();
+        var keys = [];
+        for (var index = 0; index < list.length; index += 1) keys.push(String(index));
+        if (named) keys = keys.concat(namesOf(list).filter(function (key) { return !isIndex(key); }));
+        return keys.concat(Reflect.ownKeys(base));
+      },
+      getOwnPropertyDescriptor: function (base, key) {
+        if (isIndex(key)) {
+          var list = items();
+          return Number(key) < list.length ? { value: list[Number(key)], writable: false, enumerable: true, configurable: true } : undefined;
+        }
+        if (named && typeof key === "string" && !Object.prototype.hasOwnProperty.call(base, key)) {
+          var found = lookup(items(), key);
+          if (found) return { value: found, writable: false, enumerable: false, configurable: true };
+        }
+        return Reflect.getOwnPropertyDescriptor(base, key);
+      },
+      defineProperty: function (base, key, descriptor) {
+        if (isIndex(key)) return false;
+        return Reflect.defineProperty(base, key, descriptor);
+      },
+      set: function (base, key, value, receiver) {
+        if (isIndex(key)) return false;
+        return Reflect.set(base, key, value, receiver);
+      },
+      deleteProperty: function (base, key) {
+        if (isIndex(key)) return Number(key) >= items().length;
+        return Reflect.deleteProperty(base, key);
+      },
+    });
+
+    listItems.set(view, items);
+    return view;
+  };
+
+  // A list that shows `items` as they are now (querySelectorAll's, a mutation record's).
+  var listOf = function (items, brand) {
+    var held = Array.prototype.slice.call(items);
+    return makeCollection(brand, function () { return held; });
+  };
+
+  var liveLists = { childNodes: new WeakMap(), children: new WeakMap() };
+
+  var childNodesOf = function (node) {
+    var cached = liveLists.childNodes.get(node);
+    if (!cached) {
+      cached = makeCollection("NodeList", function () {
+        var state = nodeState(node);
+        return state && Array.isArray(state.childNodes) ? state.childNodes : [];
+      });
+      liveLists.childNodes.set(node, cached);
+    }
+    return cached;
+  };
+
+  var childrenOf = function (node) {
+    var cached = liveLists.children.get(node);
+    if (!cached) {
+      cached = makeCollection("HTMLCollection", function () {
+        var state = nodeState(node);
+        if (!state || !Array.isArray(state.childNodes)) return [];
+        return state.childNodes.filter(function (kid) { var kidState = nodeState(kid); return kidState && kidState.nodeType === 1; });
+      });
+      liveLists.children.set(node, cached);
+    }
+    return cached;
+  };
+
+  env.childNodesOf = childNodesOf;
+  env.childrenOf = childrenOf;
+
+  (function installListPrototypes() {
+    var lengthOf = function (view) {
+      var items = listItems.get(view);
+      if (!items) throw env.hideFrames(new TypeError("Illegal invocation"));
+      return items();
+    };
+
+    var methods = function (holder) {
+      Object.defineProperty(holder, "item", {
+        value: asNative(function item(index) {
+          if (arguments.length < 1) throw env.hideFrames(new TypeError("Failed to execute 'item' on '" + holder.constructor.name + "': 1 argument required, but only 0 present."));
+          var found = lengthOf(this)[Number(index) >>> 0];
+          return found === undefined ? null : found;
+        }, "item"),
+        writable: true, enumerable: true, configurable: true,
+      });
+      patchGetter(holder, "length", function () { return lengthOf(this).length; });
+    };
+
+    var nodeList = globalThis.NodeList && globalThis.NodeList.prototype;
+    if (nodeList) {
+      methods(nodeList);
+      ["entries", "keys", "values", "forEach"].forEach(function (name) {
+        Object.defineProperty(nodeList, name, { value: Array.prototype[name], writable: true, enumerable: true, configurable: true });
+      });
+      Object.defineProperty(nodeList, Symbol.iterator, { value: Array.prototype.values, writable: true, enumerable: false, configurable: true });
+    }
+
+    var collection = globalThis.HTMLCollection && globalThis.HTMLCollection.prototype;
+    if (collection) {
+      methods(collection);
+      Object.defineProperty(collection, "namedItem", {
+        value: asNative(function namedItem_(name) {
+          if (arguments.length < 1) throw env.hideFrames(new TypeError("Failed to execute 'namedItem' on 'HTMLCollection': 1 argument required, but only 0 present."));
+          return namedItem(lengthOf(this), String(name));
+        }, "namedItem"),
+        writable: true, enumerable: true, configurable: true,
+      });
+      Object.defineProperty(collection, Symbol.iterator, { value: Array.prototype.values, writable: true, enumerable: false, configurable: true });
+    }
+  })();
 
   var matchingElements = function (root, selector) {
     var wanted = String(selector).toLowerCase().trim();
@@ -1990,8 +2961,7 @@
       var tag = state ? state.tag : String(node.tagName || "").toLowerCase();
       if (tag && (everything || tag === wanted)) found.push(node);
 
-      var children = node.childNodes;
-      if (!Array.isArray(children) && state) children = state.childNodes;
+      var children = state ? state.childNodes : null;
       if (!Array.isArray(children)) return;
 
       for (var index = 0; index < children.length; index += 1) walk(children[index], depth + 1);
@@ -2004,13 +2974,24 @@
   };
 
   env.matchingElements = matchingElements;
+  env.listOf = listOf;
+  env.connected = connected;
 
   var runningScript = null;
 
-  env.beginScript = function (url, inline) {
+  // A script the host runs: `element` is the page's own script element when one is running (the
+  // element module runs inserted scripts this way); otherwise the host's script gets an element of
+  // its own, as a parser-inserted one, already started so it never loads itself again.
+  env.beginScript = function (url, inline, element) {
+    if (element) {
+      runningScript = element;
+      return element;
+    }
+
     if (!inline && (!url || !/^https?:/.test(String(url)))) return null;
 
     var element = makeElement("script");
+    nodeState(element).started = true;
 
     if (!inline) {
       element.src = String(url);
@@ -2027,40 +3008,70 @@
     runningScript = null;
   };
 
+  // The document a Document method runs on: `this` when it is one, else the page's.
+  var documentOf = function (self) {
+    var state = nodeState(self);
+    return state && state.nodeType === 9 ? self : globalThis.document;
+  };
+
   if (Document && Document.prototype) {
-    patch(Document.prototype, "createElement", function createElement(tag) { return makeElement(tag); });
+    // A valid XML name, as Chrome checks a tag name (letters and "_" or ":" first, then letters,
+    // digits, ".", "-", "_", ":" and the non-ASCII name characters).
+    var VALID_NAME = /^[A-Za-z_:\u00C0-\u00D6\u00D8-\u00F6\u00F8-\u02FF\u0370-\u037D\u037F-\u1FFF\u200C-\u200D\u2070-\u218F\u2C00-\u2FEF\u3001-\uD7FF\uF900-\uFDCF\uFDF0-\uFFFD][A-Za-z0-9_:.\-\u00B7\u00C0-\u00D6\u00D8-\u00F6\u00F8-\u037D\u037F-\u1FFF\u200C-\u200D\u203F-\u2040\u2070-\u218F\u2C00-\u2FEF\u3001-\uD7FF\uF900-\uFDCF\uFDF0-\uFFFD]*$/;
+
+    patch(Document.prototype, "createElement", function createElement(tag) {
+      if (arguments.length === 0) throw env.hideFrames(new TypeError("Failed to execute 'createElement' on 'Document': 1 argument required, but only 0 present."));
+      if (!VALID_NAME.test(String(tag))) {
+        throw domException("Failed to execute 'createElement' on 'Document': The tag name provided ('" + String(tag) + "') is not a valid name.", "InvalidCharacterError");
+      }
+      return makeElement(tag);
+    });
     patch(Document.prototype, "createElementNS", function createElementNS(ns, tag) { return makeElement(tag); });
-    patch(Document.prototype, "createTextNode", function createTextNode(text) {
-      var node = globalThis.Text && globalThis.Text.prototype ? Object.create(globalThis.Text.prototype) : {};
+    // A text or comment node: character data whose state lives beside it like an element's.
+    var makeCharacterData = function (iface, nodeType, nodeName, text, owner) {
+      var holder = globalThis[iface] && globalThis[iface].prototype;
+      var node = holder ? Object.create(holder) : {};
       var value = String(text);
 
       elementState.set(node, {
-        tag: "#text",
-        handle: "text",
+        tag: nodeName,
+        handle: iface.toLowerCase(),
         attrs: {},
-        nodeType: 3,
-        nodeName: "#text",
+        nodeType: nodeType,
+        nodeName: nodeName,
         data: value,
         textContent: value,
         wholeText: value,
         length: value.length,
         parentNode: null,
         parentElement: null,
+        previousSibling: null,
+        nextSibling: null,
         childNodes: [],
-        children: [],
-        ownerDocument: globalThis.document,
+        ownerDocument: owner || globalThis.document,
       });
 
-      env.overrides.set(node, { data: value, wholeText: value, length: value.length });
-
+      env.overrides.set(node, nodeType === 3 ? { data: value, wholeText: value, length: value.length } : { data: value, length: value.length });
       return node;
+    };
+
+    env.makeCharacterData = makeCharacterData;
+
+    patch(Document.prototype, "createTextNode", function createTextNode(text) {
+      if (arguments.length < 1) throw env.hideFrames(new TypeError("Failed to execute 'createTextNode' on 'Document': 1 argument required, but only 0 present."));
+      return makeCharacterData("Text", 3, "#text", text, documentOf(this));
     });
-    patch(Document.prototype, "createDocumentFragment", function createDocumentFragment() {
+    patch(Document.prototype, "createComment", function createComment(text) {
+      if (arguments.length < 1) throw env.hideFrames(new TypeError("Failed to execute 'createComment' on 'Document': 1 argument required, but only 0 present."));
+      return makeCharacterData("Comment", 8, "#comment", text, documentOf(this));
+    });
+    installShell("Text", function (args) { return makeCharacterData("Text", 3, "#text", args.length ? args[0] : ""); }, 0);
+    installShell("Comment", function (args) { return makeCharacterData("Comment", 8, "#comment", args.length ? args[0] : ""); }, 0);
+    // A fragment: a node of its own (its children live in its state like an element's).
+    var makeFragment = function (owner) {
       var fragment = globalThis.DocumentFragment && globalThis.DocumentFragment.prototype
         ? Object.create(globalThis.DocumentFragment.prototype)
         : {};
-
-      var children = [];
 
       elementState.set(fragment, {
         tag: "#document-fragment",
@@ -2068,31 +3079,30 @@
         attrs: {},
         nodeType: 11,
         nodeName: "#document-fragment",
-        childNodes: children,
-        children: children,
+        childNodes: [],
+        children: [],
         childElementCount: 0,
+        firstElementChild: null,
+        lastElementChild: null,
+        firstChild: null,
+        lastChild: null,
+        previousSibling: null,
+        nextSibling: null,
         parentNode: null,
         parentElement: null,
         textContent: "",
-        ownerDocument: globalThis.document,
+        ownerDocument: owner || globalThis.document,
       });
 
-      env.overrides.set(fragment, { childElementCount: 0 });
-
-      try {
-        Object.defineProperty(fragment, "appendChild", {
-          value: asNative(function appendChild(child) {
-            children.push(child);
-            return child;
-          }, "appendChild"),
-          writable: true,
-          enumerable: false,
-          configurable: true,
-        });
-      } catch (error) {}
-
       return fragment;
+    };
+
+    env.makeFragment = makeFragment;
+
+    patch(Document.prototype, "createDocumentFragment", function createDocumentFragment() {
+      return makeFragment(documentOf(this));
     });
+    installShell("DocumentFragment", function () { return makeFragment(globalThis.document); }, 0);
     patch(Document.prototype, "getElementById", function getElementById() { return null; });
     patch(Document.prototype, "getElementsByTagName", function getElementsByTagName(tag) {
       return listOf(matchingElements(null, tag), "HTMLCollection");
@@ -2166,6 +3176,19 @@
     return out;
   };
 
+  var ENTITIES = { amp: "&", lt: "<", gt: ">", quot: '"', apos: "'", nbsp: "\u00a0" };
+
+  var decodeEntities = function (text) {
+    return String(text).replace(/&(#x[0-9a-f]+|#[0-9]+|[a-z]+);/gi, function (all, name) {
+      if (name.charAt(0) === "#") {
+        var code = name.charAt(1).toLowerCase() === "x" ? parseInt(name.slice(2), 16) : parseInt(name.slice(1), 10);
+        return isFinite(code) ? String.fromCodePoint(code) : all;
+      }
+      var found = ENTITIES[name.toLowerCase()];
+      return found === undefined ? all : found;
+    });
+  };
+
   var parseHtml = function (source, host) {
     var stack = [host];
     var match;
@@ -2178,10 +3201,7 @@
       if (match[5] !== undefined) {
         var text = match[5];
 
-        if (text.trim()) {
-          var node = { nodeType: 3, nodeName: "#text", textContent: text, parentNode: current };
-          current.childNodes.push(node);
-        }
+        if (text.trim()) insertChild(current, globalThis.document.createTextNode(decodeEntities(text)), null, "appendChild", true);
 
         continue;
       }
@@ -2205,22 +3225,356 @@
         } catch (error) {}
       }
 
-      element.parentNode = current;
-      current.childNodes.push(element);
-      current.children.push(element);
+      // A script the parser inserts for innerHTML never runs.
+      if (tag === "script") nodeState(element).started = true;
+      insertChild(current, element, null, "appendChild", true);
 
       if (!VOID_TAGS[tag] && !match[4]) stack.push(element);
-    }
-
-    if (host.childNodes.length) {
-      host.firstChild = host.childNodes[0];
-      host.lastChild = host.childNodes[host.childNodes.length - 1];
     }
 
     return host;
   };
 
   env.parseHtml = parseHtml;
+
+  var relink = function (parent) {
+    var state = nodeState(parent);
+    if (!state || !Array.isArray(state.childNodes)) return;
+
+    var kids = state.childNodes;
+    state.firstChild = kids.length ? kids[0] : null;
+    state.lastChild = kids.length ? kids[kids.length - 1] : null;
+
+    var elements = [];
+
+    for (var index = 0; index < kids.length; index += 1) {
+      var childState = nodeState(kids[index]);
+      if (childState && childState.nodeType === 1) elements.push(kids[index]);
+
+      if (childState) {
+        childState.previousSibling = index > 0 ? kids[index - 1] : null;
+        childState.nextSibling = index + 1 < kids.length ? kids[index + 1] : null;
+      }
+    }
+
+    state.children = elements;
+    state.childElementCount = elements.length;
+    state.firstElementChild = elements.length ? elements[0] : null;
+    state.lastElementChild = elements.length ? elements[elements.length - 1] : null;
+  };
+
+  // The tree, as the DOM standard changes it: a node goes in at one place among its parent's
+  // children (leaving any parent it had), a fragment gives up its children, and every change is a
+  // mutation record for MutationObserver and a chance for an element to start loading (a script
+  // runs, an iframe opens, an image already loading stays loading) once it is in the document.
+  var childListOf = function (parent) {
+    var state = nodeState(parent);
+    return state && Array.isArray(state.childNodes) ? state.childNodes : null;
+  };
+
+  var takeChild = function (parent, child, quiet) {
+    forgetLayoutSource(parent);
+    var kids = childListOf(parent);
+    var childState = nodeState(child);
+    if (!kids || !childState) return child;
+
+    var at = kids.indexOf(child);
+    if (at === -1) return child;
+
+    var previous = at > 0 ? kids[at - 1] : null;
+    var next = at + 1 < kids.length ? kids[at + 1] : null;
+    var wasConnected = connected(parent);
+
+    kids.splice(at, 1);
+    childState.parentNode = null;
+    childState.parentElement = null;
+    childState.previousSibling = null;
+    childState.nextSibling = null;
+    relink(parent);
+    walkFrames(child, detachFrame);
+
+    if (!quiet) env.queueMutation({ type: "childList", target: parent, addedNodes: [], removedNodes: [child], previousSibling: previous, nextSibling: next });
+    if (wasConnected) env.nodeRemoved(child);
+
+    return child;
+  };
+
+  var notChild = function (method) {
+    return domException("Failed to execute '" + method + "' on 'Node': The node before which the new node is to be inserted is not a child of this node.", "NotFoundError");
+  };
+
+  // A node (and its subtree) moving into another document takes that document as its owner.
+  var adopt = function (node, owner) {
+    var state = nodeState(node);
+    if (!state) return;
+    if (state.nodeType !== 9) state.ownerDocument = owner;
+    if (state.nodeType === 1 && typeof retag === "function") retag(state, owner);
+    var kids = state.childNodes || [];
+    for (var index = 0; index < kids.length; index += 1) adopt(kids[index], owner);
+  };
+
+  // The DOM standard's "ensure pre-insertion validity", with Chrome's messages: what may go where
+  // (nothing into a text node; no text, and one element and one doctype only, in a document).
+  var hierarchy = function (method, iface, message) {
+    return domException("Failed to execute '" + method + "' on '" + (iface || "Node") + "': " + message, "HierarchyRequestError");
+  };
+
+  var ensureInsertable = function (parent, parentState, child, childState, before, method, replacing, iface) {
+    if (parentState.nodeType !== 1 && parentState.nodeType !== 9 && parentState.nodeType !== 11) {
+      throw hierarchy(method, iface, "This node type does not support this method.");
+    }
+
+    for (var up = parent; up; up = nodeState(up) ? nodeState(up).parentNode : null) {
+      if (up === child) throw hierarchy(method, iface, "The new child element contains the parent.");
+    }
+
+    var type = childState.nodeType;
+    if (type !== 1 && type !== 3 && type !== 4 && type !== 7 && type !== 8 && type !== 10 && type !== 11) {
+      throw hierarchy(method, iface, "Nodes of type '" + childState.nodeName + "' may not be inserted inside nodes of type '" + parentState.nodeName + "'.");
+    }
+    if ((type === 3 && parentState.nodeType === 9) || (type === 10 && parentState.nodeType !== 9)) {
+      throw hierarchy(method, iface, "Nodes of type '" + childState.nodeName + "' may not be inserted inside nodes of type '" + parentState.nodeName + "'.");
+    }
+    if (parentState.nodeType !== 9) return;
+
+    var kids = parentState.childNodes.filter(function (kid) { return kid !== replacing; });
+    var kindOf = function (node) { var state = nodeState(node); return state ? state.nodeType : 0; };
+    var elementsIn = function (list) { return list.filter(function (node) { return kindOf(node) === 1; }).length; };
+    var doctypeAfter = before ? kids.slice(kids.indexOf(before)).some(function (node) { return kindOf(node) === 10; }) : false;
+
+    if (type === 11) {
+      var moving = childState.childNodes || [];
+      if (moving.some(function (node) { return kindOf(node) === 3; })) {
+        throw hierarchy(method, iface, "Nodes of type '#text' may not be inserted inside nodes of type '#document'.");
+      }
+      var count = elementsIn(moving);
+      if (count > 1 || (count === 1 && (elementsIn(kids) > 0 || doctypeAfter))) throw hierarchy(method, iface, "Only one element on document allowed.");
+    } else if (type === 1) {
+      if (elementsIn(kids) > 0) throw hierarchy(method, iface, "Only one element on document allowed.");
+      if (doctypeAfter) throw hierarchy(method, iface, "Can't insert an element before a doctype.");
+    } else if (type === 10) {
+      if (kids.some(function (node) { return kindOf(node) === 10; })) throw hierarchy(method, iface, "Only one doctype on document allowed.");
+      var at = before ? kids.indexOf(before) : kids.length;
+      if (kids.slice(0, at).some(function (node) { return kindOf(node) === 1; })) throw hierarchy(method, iface, "Can't insert a doctype after an element.");
+    }
+  };
+
+  var insertChild = function (parent, child, before, method, quiet, replacing, iface) {
+    forgetLayoutSource(parent);
+    var kids = childListOf(parent);
+    var childState = nodeState(child);
+
+    if (!childState || !kids) {
+      throw env.hideFrames(new TypeError("Failed to execute '" + method + "' on '" + (iface || "Node") + "': parameter 1 is not of type 'Node'."));
+    }
+
+    ensureInsertable(parent, nodeState(parent), child, childState, before, method, replacing, iface);
+
+    if (before !== null && before !== undefined && kids.indexOf(before) === -1) throw notChild(method);
+    if (before === child) before = childState.nextSibling;
+
+    var moving = [child];
+
+    if (childState.nodeType === 11) {
+      moving = childState.childNodes.slice();
+      for (var each = 0; each < moving.length; each += 1) takeChild(child, moving[each], true);
+    } else if (childState.parentNode) {
+      takeChild(childState.parentNode, child, quiet);
+    }
+
+    if (!moving.length) return child;
+
+    var at = before === null || before === undefined ? kids.length : kids.indexOf(before);
+    var previous = at > 0 ? kids[at - 1] : null;
+    var next = at < kids.length ? kids[at] : null;
+
+    Array.prototype.splice.apply(kids, [at, 0].concat(moving));
+
+    var parentIsElement = nodeState(parent) && nodeState(parent).nodeType === 1;
+
+    var parentState = nodeState(parent);
+    var owner = parentState && parentState.nodeType === 9 ? parent : parentState ? parentState.ownerDocument : null;
+
+    for (var index = 0; index < moving.length; index += 1) {
+      var movedState = nodeState(moving[index]);
+      if (owner && movedState.ownerDocument !== owner) adopt(moving[index], owner);
+      movedState.parentNode = parent;
+      movedState.parentElement = parentIsElement ? parent : null;
+      if (movedState.tag === "script" && movedState.attrs.src) record("script", movedState.attrs.src);
+      if (movedState.tag === "iframe") record("iframe", movedState.attrs.src || "about:blank");
+    }
+
+    relink(parent);
+
+    if (!quiet) env.queueMutation({ type: "childList", target: parent, addedNodes: moving, removedNodes: [], previousSibling: previous, nextSibling: next });
+
+    if (connected(parent)) {
+      for (var inserted = 0; inserted < moving.length; inserted += 1) {
+        walkFrames(moving[inserted], attachFrame);
+        env.nodeInserted(moving[inserted]);
+      }
+    }
+
+    return child;
+  };
+
+  env.insertChild = insertChild;
+  env.takeChild = takeChild;
+
+  var appendChild = function appendChild(child) {
+    if (arguments.length < 1) throw env.hideFrames(new TypeError("Failed to execute 'appendChild' on 'Node': 1 argument required, but only 0 present."));
+    return insertChild(this, child, null, "appendChild", false);
+  };
+
+  // Removes every child at once and puts `replacement` (nodes) in their place, one mutation record
+  // for it all, as textContent and innerHTML do.
+  var replaceAll = function (parent, replacement) {
+    var kids = childListOf(parent);
+    if (!kids) return;
+
+    var removed = kids.slice();
+    for (var index = 0; index < removed.length; index += 1) takeChild(parent, removed[index], true);
+    for (var add = 0; add < replacement.length; add += 1) insertChild(parent, replacement[add], null, "appendChild", true);
+
+    if (removed.length || replacement.length) {
+      env.queueMutation({ type: "childList", target: parent, addedNodes: replacement.slice(), removedNodes: removed, previousSibling: null, nextSibling: null });
+    }
+  };
+
+  env.replaceAll = replaceAll;
+
+  var detachChild = function (parent, child) {
+    if (!parent) return child;
+    return takeChild(parent, child, false);
+  };
+
+  // Hooks the element module fills in: a node entering or leaving the document, an attribute
+  // changing, and mutation records (none are queued before an observer can exist).
+  env.queueMutation = function () {};
+  env.opaqueFrame = function () { return false; };
+  env.nodeInserted = function () {};
+  env.nodeRemoved = function () {};
+  env.attributeChanged = function (node, key) {
+    var state = nodeState(node);
+    if (key === "src" && state && state.tag === "iframe" && state.frame) navigateFrame(node, state.frame);
+  };
+
+  // Sets (or with null removes) an attribute: the element's own fields that mirror it follow, an
+  // observer hears it with the old value, and the element reacts (a new src loads).
+  var setAttr = function (node, name, value, fromStyle) {
+    var state = nodeState(node);
+    if (!state || state.nodeType !== 1) return;
+
+    var key = typeof attributeKey === "function" ? attributeKey(state, node, name) : String(name).toLowerCase();
+    var had = Object.prototype.hasOwnProperty.call(state.attrs, key);
+    var old = had ? state.attrs[key] : null;
+
+    if (value === null) {
+      if (!had) return;
+      delete state.attrs[key];
+    } else {
+      state.attrs[key] = String(value);
+    }
+
+    syncAttributes(node);
+
+    if (key === "class") state.className = value === null ? "" : String(value);
+    if (key === "id") state.id = value === null ? "" : String(value);
+    if (key === "src") state.src = value === null ? "" : String(value);
+    if (key === "style" && !fromStyle && state.style && styleParsers.has(state.style)) styleParsers.get(state.style)(value === null ? "" : String(value));
+
+    env.queueMutation({ type: "attributes", target: node, attributeName: key, attributeNamespace: null, oldValue: old });
+    env.attributeChanged(node, key, old, value === null ? null : String(value));
+  };
+
+  env.setAttr = setAttr;
+
+  // Text, as Node.textContent and CharacterData read and change it.
+  var textOf = function (node) {
+    var state = nodeState(node);
+    if (!state) return "";
+    if (state.nodeType === 3 || state.nodeType === 8 || state.nodeType === 4 || state.nodeType === 7) return state.data;
+    var out = "";
+    var kids = state.childNodes || [];
+    for (var index = 0; index < kids.length; index += 1) {
+      var kid = nodeState(kids[index]);
+      if (kid && kid.nodeType !== 8 && kid.nodeType !== 7) out += textOf(kids[index]);
+    }
+    return out;
+  };
+
+  env.textOf = textOf;
+
+  var setData = function (node, value) {
+    var state = nodeState(node);
+    if (!state) return;
+    var old = state.data;
+    var text = value === null ? "" : String(value);
+    state.data = text;
+    state.textContent = text;
+    state.wholeText = text;
+    state.length = text.length;
+    env.overrides.set(node, { data: text, wholeText: text, length: text.length, nodeValue: text });
+    env.queueMutation({ type: "characterData", target: node, addedNodes: [], removedNodes: [], oldValue: old });
+    if (state.parentNode) env.textChanged(state.parentNode);
+  };
+
+  env.textChanged = function () {};
+
+  var installText = function (nodeProto) {
+    if (!nodeProto) return;
+
+    try {
+      Object.defineProperty(nodeProto, "textContent", {
+        get: asNative(function () {
+          var state = nodeState(this);
+          if (!state) return null;
+          if (state.nodeType === 9 || state.nodeType === 10) return null;
+          return textOf(this);
+        }, "get textContent"),
+        set: asNative(function (value) {
+          var state = nodeState(this);
+          if (!state) return;
+          if (state.nodeType === 3 || state.nodeType === 8) return setData(this, value);
+          var text = value === null || value === undefined ? "" : String(value);
+          replaceAll(this, text ? [globalThis.document.createTextNode(text)] : []);
+          state.layoutSource = text;
+          env.textChanged(this);
+        }, "set textContent"),
+        enumerable: true,
+        configurable: true,
+      });
+
+      Object.defineProperty(nodeProto, "nodeValue", {
+        get: asNative(function () {
+          var state = nodeState(this);
+          return state && (state.nodeType === 3 || state.nodeType === 8) ? state.data : null;
+        }, "get nodeValue"),
+        set: asNative(function (value) {
+          var state = nodeState(this);
+          if (state && (state.nodeType === 3 || state.nodeType === 8)) setData(this, value);
+        }, "set nodeValue"),
+        enumerable: true,
+        configurable: true,
+      });
+    } catch (error) {}
+
+    var characterData = globalThis.CharacterData && globalThis.CharacterData.prototype;
+
+    if (characterData) {
+      patchGetter(characterData, "data", function () { var state = nodeState(this); return state ? state.data : ""; });
+      try {
+        var dataDescriptor = Object.getOwnPropertyDescriptor(characterData, "data");
+        Object.defineProperty(characterData, "data", {
+          get: dataDescriptor.get,
+          set: asNative(function (value) { setData(this, value); }, "set data"),
+          enumerable: true,
+          configurable: true,
+        });
+      } catch (error) {}
+      patchGetter(characterData, "length", function () { var state = nodeState(this); return state ? state.data.length : 0; });
+    }
+  };
 
   var html = makeElement("html");
   var head = makeElement("head");
@@ -2232,15 +3586,36 @@
     } catch (error) {}
   };
 
-  html.children = [head, body];
-  html.childNodes = [head, body];
-  setOwn(head, "parentNode", html);
-  setOwn(body, "parentNode", html);
-  setOwn(html, "parentNode", document);
+  insertChild(html, head, null, "appendChild", true);
+  insertChild(html, body, null, "appendChild", true);
+
+  // The document is a node too: its children are its doctype (when the page has one) and <html>.
+  var doctype = null;
+  try {
+    doctype = document.doctype || null;
+  } catch (error) {}
+
+  var documentState = {
+    nodeType: 9, nodeName: "#document", parentNode: null, parentElement: null, ownerDocument: null,
+    previousSibling: null, nextSibling: null, childNodes: [], attrs: {},
+  };
+  var hasDocument = document !== null && typeof document === "object";
+  if (hasDocument) elementState.set(document, documentState);
+
+  if (hasDocument && doctype && typeof doctype === "object") {
+    elementState.set(doctype, {
+      nodeType: 10, nodeName: String(doctype.name || "html"), parentNode: document, parentElement: null,
+      ownerDocument: document, previousSibling: null, nextSibling: null, childNodes: [], attrs: {},
+    });
+    documentState.childNodes.push(doctype);
+  }
+
+  documentState.childNodes.push(html);
+  nodeState(html).parentNode = document;
+  if (hasDocument) relink(document);
 
   env.tree = { html: html, head: head, body: body };
 
-  var cookie = "";
 
   var parseUrl = function (href) {
     var match = /^(https?:)\/\/([^/?#:]+)(?::(\d+))?([^?#]*)(\?[^#]*)?(#.*)?$/.exec(String(href));
@@ -2306,10 +3681,7 @@
       documentElement: html,
       body: body,
       head: head,
-      children: [html],
-      childNodes: [html],
-      firstChild: html,
-      lastChild: html,
+
       all: [html, head, body],
       forms: [],
       links: [],
@@ -2340,6 +3712,12 @@
       nodeName: "#document",
     };
 
+    ["firstChild", "lastChild", "firstElementChild", "lastElementChild", "childElementCount"].forEach(function (field) {
+      Object.defineProperty(documentValues, field, { get: function () { return documentState[field]; }, enumerable: true, configurable: true });
+    });
+    Object.defineProperty(documentValues, "childNodes", { get: function () { return childNodesOf(document); }, enumerable: true, configurable: true });
+    Object.defineProperty(documentValues, "children", { get: function () { return childrenOf(document); }, enumerable: true, configurable: true });
+
     Object.defineProperty(documentValues, "currentScript", {
       get: function () { return runningScript; },
       enumerable: true,
@@ -2360,8 +3738,53 @@
           delete document[key];
         } catch (error) {}
 
-        patchGetter(Document.prototype, key, function () { return documentValues[key]; });
+        // baseURI is every node's (Node.prototype), not only the document's: below.
+        if (key === "baseURI") return;
+
+        patchGetter(Document.prototype, key, function () {
+          return typeof documentField === "function" ? documentField(this, key) : documentValues[key];
+        });
       })(documentKeys[d]);
+    }
+
+    // A node's base URL, as the HTML standard gives it: its document's first <base href>
+    // resolved against the document's URL, else that URL; a frame still on about:blank inherits
+    // the base URL of the page that made it, and a document a script made is about:blank.
+    var firstBaseHref = function (root) {
+      var stack = [root];
+      while (stack.length) {
+        var node = stack.shift();
+        var state = nodeState(node);
+        if (!state) continue;
+        if (state.nodeType === 1 && state.tag === "base" && state.attrs && typeof state.attrs.href === "string") return state.attrs.href;
+        if (Array.isArray(state.childNodes)) stack = state.childNodes.concat(stack);
+      }
+      return null;
+    };
+
+    var baseOf = function (doc) {
+      var docState = nodeState(doc);
+      var fallback;
+      if (doc === document || (docState && docState.main)) {
+        fallback = documentValues.URL === "about:blank" && env.isFrame && referrerHref ? referrerHref : documentValues.baseURI;
+      } else {
+        fallback = docState && docState.URL ? docState.URL : "about:blank";
+      }
+      var href = firstBaseHref(doc);
+      if (href === null) return fallback;
+      try {
+        return new globalThis.URL(href, fallback).href;
+      } catch (error) {
+        return fallback;
+      }
+    };
+
+    if (Node && Node.prototype) {
+      patchGetter(Node.prototype, "baseURI", function () {
+        var state = nodeState(this);
+        if (!state) throw env.hideFrames(new TypeError("Illegal invocation"));
+        return baseOf(state.nodeType === 9 ? this : state.ownerDocument || document);
+      });
     }
 
     // A frame starts on about:blank; when it navigates, its location and document take the URL
@@ -2377,101 +3800,49 @@
     };
 
     try {
-      env.cookies = function () { return cookie; };
+      // document.cookie is the host's jar, as a page's is the browser's: what the server set (but
+      // HttpOnly ones) shows, and an assignment goes to the jar, which parses its attributes.
+      // (A document a script made reads none: the documents section wraps this for those.)
+      env.cookies = function () { return bridge.cookieRead(); };
 
       Object.defineProperty(Document.prototype, "cookie", {
-        get: asNative(function () { return cookie; }, "get cookie"),
-        set: asNative(function (value) {
-          var pair = String(value).split(";")[0];
-          cookie = cookie ? cookie + "; " + pair : pair;
-        }, "set cookie"),
+        get: asNative(function () { return bridge.cookieRead(); }, "get cookie"),
+        set: asNative(function (value) { bridge.cookieWrite(String(value)); }, "set cookie"),
         enumerable: true,
         configurable: true,
       });
     } catch (error) {}
   }
 
-  var relink = function (parent) {
-    var state = nodeState(parent);
-    if (!state || !Array.isArray(state.childNodes)) return;
-
-    var kids = state.childNodes;
-    state.firstChild = kids.length ? kids[0] : null;
-    state.lastChild = kids.length ? kids[kids.length - 1] : null;
-
-    var elements = [];
-
-    for (var index = 0; index < kids.length; index += 1) {
-      var childState = nodeState(kids[index]);
-      if (childState && childState.nodeType === 1) elements.push(kids[index]);
-
-      if (childState) {
-        childState.previousSibling = index > 0 ? kids[index - 1] : null;
-        childState.nextSibling = index + 1 < kids.length ? kids[index + 1] : null;
-      }
-    }
-
-    state.children = elements;
-    state.childElementCount = elements.length;
-    state.firstElementChild = elements.length ? elements[0] : null;
-    state.lastElementChild = elements.length ? elements[elements.length - 1] : null;
-  };
-
-  var appendChild = function appendChild(child) {
-    if (child && typeof child === "object") {
-      child.parentNode = this;
-      if (Array.isArray(this.childNodes)) this.childNodes.push(child);
-      if (Array.isArray(this.children)) this.children.push(child);
-      if (nodeState(child) && nodeState(child).tag === "script" && child.src) record("script", child.src);
-      if (nodeState(child) && nodeState(child).tag === "iframe") record("iframe", child.src || "about:blank");
-
-      var childState = nodeState(child);
-      if (childState) childState.parentElement = nodeState(this) && nodeState(this).nodeType === 1 ? this : null;
-
-      relink(this);
-      if (connected(this)) walkFrames(child, attachFrame);
-    }
-
-    return child;
-  };
-
-  var detachChild = function (parent, child) {
-    if (!child || typeof child !== "object") return child;
-
-    if (parent && Array.isArray(parent.childNodes)) {
-      var at = parent.childNodes.indexOf(child);
-      if (at !== -1) parent.childNodes.splice(at, 1);
-    }
-
-    if (parent && Array.isArray(parent.children)) {
-      var where = parent.children.indexOf(child);
-      if (where !== -1) parent.children.splice(where, 1);
-    }
-
-    try {
-      child.parentNode = null;
-    } catch (error) {}
-
-    var goneState = nodeState(child);
-    if (goneState) {
-      goneState.parentElement = null;
-      goneState.previousSibling = null;
-      goneState.nextSibling = null;
-    }
-
-    relink(parent);
-    walkFrames(child, detachFrame);
-
-    return child;
-  };
-
   var nodePrototype = Node && Node.prototype ? Node.prototype : Element && Element.prototype;
 
   if (nodePrototype) {
     patch(nodePrototype, "appendChild", appendChild);
-    patch(nodePrototype, "insertBefore", function insertBefore(child) { return appendChild.call(this, child); });
+    patch(nodePrototype, "insertBefore", function insertBefore(child, before) {
+      if (arguments.length < 2) throw env.hideFrames(new TypeError("Failed to execute 'insertBefore' on 'Node': 2 arguments required, but only " + arguments.length + " present."));
+      return insertChild(this, child, before, "insertBefore", false);
+    });
     patch(nodePrototype, "removeChild", function removeChild(child) {
-      return detachChild(this, child);
+      var kids = childListOf(this);
+      if (!kids || kids.indexOf(child) === -1) {
+        throw domException("Failed to execute 'removeChild' on 'Node': The node to be removed is not a child of this node.", "NotFoundError");
+      }
+      return takeChild(this, child, false);
+    });
+    patch(nodePrototype, "replaceChild", function replaceChild(child, old) {
+      if (arguments.length < 2) throw env.hideFrames(new TypeError("Failed to execute 'replaceChild' on 'Node': 2 arguments required, but only " + arguments.length + " present."));
+      var kids = childListOf(this);
+      var childState = nodeState(child);
+      if (!childState) throw env.hideFrames(new TypeError("Failed to execute 'replaceChild' on 'Node': parameter 1 is not of type 'Node'."));
+      if (!nodeState(old)) throw env.hideFrames(new TypeError("Failed to execute 'replaceChild' on 'Node': parameter 2 is not of type 'Node'."));
+      if (kids) ensureInsertable(this, nodeState(this), child, childState, null, "replaceChild", old, "Node");
+      if (!kids || kids.indexOf(old) === -1) {
+        throw domException("Failed to execute 'replaceChild' on 'Node': The node to be replaced is not a child of this node.", "NotFoundError");
+      }
+      var next = nodeState(old).nextSibling;
+      takeChild(this, old, false);
+      insertChild(this, child, next === child ? nodeState(child).nextSibling : next, "replaceChild", false);
+      return old;
     });
     patch(nodePrototype, "contains", function contains(other) {
       var current = other;
@@ -2509,8 +3880,7 @@
     });
 
     patch(nodePrototype, "dispatchEvent", function dispatchEvent(event) {
-      dispatch(this, event);
-      return true;
+      return dispatch(this, event);
     });
 
     patch(nodePrototype, "getRootNode", function getRootNode() {
@@ -2529,29 +3899,18 @@
 
   if (Element && Element.prototype) {
     patch(Element.prototype, "setAttribute", function setAttribute(key, value) {
-      attributesOf(this)[key] = String(value);
-      syncAttributes(this);
-
-      var attrState = nodeState(this);
-
-      if (attrState) {
-        if (key === "class") attrState.className = String(value);
-        if (key === "id") attrState.id = String(value);
-        if (key === "src") attrState.src = String(value);
-      }
-
-      var attrState = nodeState(this);
-      if (key === "src" && attrState && attrState.tag === "iframe" && attrState.frame) navigateFrame(this, attrState.frame);
+      if (arguments.length < 2) throw env.hideFrames(new TypeError("Failed to execute 'setAttribute' on 'Element': 2 arguments required, but only " + arguments.length + " present."));
+      setAttr(this, key, String(value));
     });
     patch(Element.prototype, "getAttribute", function getAttribute(key) {
-      return hasAttributeNamed(this, key) ? attributesOf(this)[key] : null;
+      var name = String(key).toLowerCase();
+      return hasAttributeNamed(this, name) ? attributesOf(this)[name] : null;
     });
     patch(Element.prototype, "hasAttribute", function hasAttribute(key) {
-      return hasAttributeNamed(this, key);
+      return hasAttributeNamed(this, String(key).toLowerCase());
     });
     patch(Element.prototype, "removeAttribute", function removeAttribute(key) {
-      delete attributesOf(this)[key];
-      syncAttributes(this);
+      setAttr(this, key, null);
     });
     var makeRect = function (box) {
       var rect = globalThis.DOMRect && globalThis.DOMRect.prototype ? Object.create(globalThis.DOMRect.prototype) : {};
@@ -2652,11 +4011,108 @@
       var found = shadowRoots.get(this);
       return found && found.mode === "open" ? found.root : null;
     });
-    patch(Element.prototype, "remove", function remove() {
-      detachChild(this.parentNode, this);
-      return undefined;
-    });
   }
+
+  // The ChildNode and ParentNode mixins (before, after, replaceWith, remove; append, prepend,
+  // replaceChildren), as the DOM standard defines them: strings become text nodes, and several
+  // nodes go in as one fragment.
+  (function installNodeMixins() {
+    var ifaceOf = function (node) {
+      var state = nodeState(node);
+      if (!state) return "Node";
+      if (state.nodeType === 9) return "Document";
+      if (state.nodeType === 11) return "DocumentFragment";
+      if (state.nodeType === 10) return "DocumentType";
+      if (state.nodeType === 3 || state.nodeType === 8) return "CharacterData";
+      return "Element";
+    };
+
+    var convert = function (args, method, iface) {
+      var nodes = [];
+      for (var index = 0; index < args.length; index += 1) {
+        var given = args[index];
+        nodes.push(nodeState(given) ? given : globalThis.document.createTextNode(String(given)));
+      }
+      if (nodes.length === 1) return nodes[0];
+      var fragment = globalThis.document.createDocumentFragment();
+      for (var at = 0; at < nodes.length; at += 1) insertChild(fragment, nodes[at], null, method, true, undefined, iface);
+      return fragment;
+    };
+
+    var viable = function (start, step, excluded) {
+      for (var node = start; node; node = nodeState(node)[step]) {
+        if (excluded.indexOf(node) === -1) return node;
+      }
+      return null;
+    };
+
+    var childNode = {
+      before: function before() {
+        var state = nodeState(this);
+        var parent = state && state.parentNode;
+        if (!parent) return;
+        var args = Array.prototype.slice.call(arguments);
+        var previous = viable(state.previousSibling, "previousSibling", args);
+        var node = convert(args, "before", ifaceOf(this));
+        var kids = childListOf(parent);
+        var reference = previous === null ? kids[0] || null : nodeState(previous).nextSibling;
+        insertChild(parent, node, reference, "before", false, undefined, ifaceOf(this));
+      },
+      after: function after() {
+        var state = nodeState(this);
+        var parent = state && state.parentNode;
+        if (!parent) return;
+        var args = Array.prototype.slice.call(arguments);
+        var next = viable(state.nextSibling, "nextSibling", args);
+        insertChild(parent, convert(args, "after", ifaceOf(this)), next, "after", false, undefined, ifaceOf(this));
+      },
+      replaceWith: function replaceWith() {
+        var state = nodeState(this);
+        var parent = state && state.parentNode;
+        if (!parent) return;
+        var args = Array.prototype.slice.call(arguments);
+        var next = viable(state.nextSibling, "nextSibling", args);
+        var node = convert(args, "replaceWith", ifaceOf(this));
+        if (nodeState(this).parentNode === parent) {
+          ensureInsertable(parent, nodeState(parent), node, nodeState(node), null, "replaceWith", this, ifaceOf(this));
+          takeChild(parent, this, false);
+        }
+        insertChild(parent, node, next, "replaceWith", false, undefined, ifaceOf(this));
+      },
+      remove: function remove() {
+        var state = nodeState(this);
+        if (state && state.parentNode) takeChild(state.parentNode, this, false);
+      },
+    };
+
+    var parentNode = {
+      append: function append() {
+        insertChild(this, convert(arguments, "append", ifaceOf(this)), null, "append", false, undefined, ifaceOf(this));
+      },
+      prepend: function prepend() {
+        var kids = childListOf(this);
+        insertChild(this, convert(arguments, "prepend", ifaceOf(this)), kids && kids.length ? kids[0] : null, "prepend", false, undefined, ifaceOf(this));
+      },
+      replaceChildren: function replaceChildren() {
+        var node = convert(arguments, "replaceChildren", ifaceOf(this));
+        ensureInsertable(this, nodeState(this), node, nodeState(node), null, "replaceChildren", undefined, ifaceOf(this));
+        var kids = childListOf(this).slice();
+        for (var index = 0; index < kids.length; index += 1) takeChild(this, kids[index], false);
+        insertChild(this, node, null, "replaceChildren", false, undefined, ifaceOf(this));
+      },
+    };
+
+    var install = function (holderName, methods) {
+      var holder = globalThis[holderName] && globalThis[holderName].prototype;
+      if (!holder) return;
+      Object.keys(methods).forEach(function (name) {
+        if (typeof holder[name] === "function") patch(holder, name, methods[name]);
+      });
+    };
+
+    ["Element", "CharacterData", "DocumentType"].forEach(function (name) { install(name, childNode); });
+    ["Element", "Document", "DocumentFragment"].forEach(function (name) { install(name, parentNode); });
+  })();
 
   if (HTMLElement && HTMLElement.prototype) {
     patch(HTMLElement.prototype, "focus", function focus() { return undefined; });
@@ -2707,12 +4163,7 @@
     if (!reply || reply.kind === "primitive") return reply ? reply.value : null;
 
     if (reply.kind === "imagedata") {
-      var data = new Uint8ClampedArray(reply.data);
-      var image = Object.create(globalThis.ImageData ? globalThis.ImageData.prototype : Object.prototype);
-      Object.defineProperty(image, "data", { value: data, enumerable: true });
-      Object.defineProperty(image, "width", { value: reply.width, enumerable: true });
-      Object.defineProperty(image, "height", { value: reply.height, enumerable: true });
-      return image;
+      return env.makeImageData(new Uint8ClampedArray(reply.data), reply.width, reply.height);
     }
 
     if (reply.kind === "typed") {
@@ -2928,13 +4379,15 @@
       return contextFor(this, kind);
     });
 
+    // A canvas's encoding: what the capture recorded for this draw sequence, else the canvas as
+    // a blank image of the asked type (platform.js's env.blankCanvas), as Chrome encodes an
+    // untouched canvas; an empty canvas is "data:,". toBlob is platform.js's, built on this.
     patch(globalThis.HTMLCanvasElement.prototype, "toDataURL", function toDataURL(type) {
       var value = recordGraphics(handleOf(this), "toDataURL", arguments);
-      return typeof value === "string" ? value : "data:,";
-    });
-
-    patch(globalThis.HTMLCanvasElement.prototype, "toBlob", function toBlob(callback) {
-      env.later(function () { callback(null); }, 0);
+      if (typeof value === "string" && value !== "data:,") return value;
+      var width = Number(this.width) || 0;
+      var height = Number(this.height) || 0;
+      return width && height && env.blankCanvas ? env.blankCanvas(width, height, type) : "data:,";
     });
   }
 
@@ -3030,9 +4483,7 @@
       var out = bridge.digest(String(name), hex);
 
       if (out === null) {
-        var error = new Error("Unrecognized name.");
-        error.name = "NotSupportedError";
-        return Promise.reject(env.hideFrames(error));
+        return Promise.reject(domException("Unrecognized name.", "NotSupportedError"));
       }
 
       var bytes = new Uint8Array(out.length / 2);
@@ -3058,80 +4509,14 @@
   }
 
 
-  if (globalThis.XMLHttpRequest && globalThis.XMLHttpRequest.prototype) {
-    var xhr = globalThis.XMLHttpRequest.prototype;
-
-    patch(xhr, "open", function open(method, url) {
-      this.__method = String(method);
-      this.__url = String(url);
-      this.__headers = {};
-      this.readyState = 1;
-    });
-
-    patch(xhr, "setRequestHeader", function setRequestHeader(name, value) {
-      if (!this.__headers) this.__headers = {};
-      this.__headers[String(name).toLowerCase()] = String(value);
-    });
-
-    patch(xhr, "send", function send(body) {
-      var request = this;
-      var bytes = body ? body.byteLength || body.length || 0 : 0;
-      record("xhr", { method: request.__method, url: request.__url, headers: request.__headers, bytes: bytes });
-
-      bridge.request(request.__method, request.__url, JSON.stringify(request.__headers || {}), body, function (status, headerJson, text) {
-        var headers = JSON.parse(headerJson);
-        request.readyState = 4;
-        request.status = status;
-        request.responseText = text;
-        request.response = text;
-
-        patch(request, "getAllResponseHeaders", function getAllResponseHeaders() {
-          return Object.keys(headers).map(function (key) { return key + ": " + headers[key]; }).join("\r\n");
-        });
-
-        patch(request, "getResponseHeader", function getResponseHeader(name) {
-          var value = headers[String(name).toLowerCase()];
-          return value === undefined ? null : value;
-        });
-
-        dispatch(request, makeEvent("readystatechange"));
-        dispatch(request, makeEvent("load"));
-        dispatch(request, makeEvent("loadend"));
-      });
-    });
-
-    patch(xhr, "abort", function abort() { return undefined; });
-    patch(xhr, "overrideMimeType", function overrideMimeType() { return undefined; });
-    patch(xhr, "getAllResponseHeaders", function getAllResponseHeaders() { return ""; });
-    patch(xhr, "getResponseHeader", function getResponseHeader() { return null; });
-  }
-
   var navigatorPrototype = protoOf(globalThis.navigator);
 
-  var batteryFacts = traits.battery || {};
 
   var recordedDuration = function (name) {
     return (traits.durations && traits.durations[name]) || 0;
   };
 
   if (navigatorPrototype) {
-    patch(navigatorPrototype, "getBattery", function getBattery() {
-      env.spend(recordedDuration("battery"));
-
-      return Promise.resolve({
-        charging: batteryFacts.charging !== undefined ? batteryFacts.charging : true,
-        chargingTime: batteryFacts.chargingTime === "Infinity" || batteryFacts.chargingTime === undefined ? Infinity : batteryFacts.chargingTime,
-        dischargingTime: batteryFacts.dischargingTime === "Infinity" || batteryFacts.dischargingTime === undefined ? Infinity : batteryFacts.dischargingTime,
-        level: batteryFacts.level !== undefined ? batteryFacts.level : 0.8,
-        onchargingchange: null,
-        onchargingtimechange: null,
-        ondischargingtimechange: null,
-        onlevelchange: null,
-        addEventListener: addListener,
-        removeEventListener: removeListener,
-      });
-    });
-
     patch(navigatorPrototype, "sendBeacon", function sendBeacon() { return true; });
     patch(navigatorPrototype, "javaEnabled", function javaEnabled() { return false; });
     patch(navigatorPrototype, "vibrate", function vibrate() { return false; });
@@ -3198,40 +4583,12 @@
   var mediaDevices = globalThis.navigator && globalThis.navigator.mediaDevices;
 
   if (mediaDevices) {
-    var deviceInfo = function (kind) {
-      var proto = globalThis.InputDeviceInfo && kind === "videoinput" ? globalThis.InputDeviceInfo.prototype : globalThis.MediaDeviceInfo && globalThis.MediaDeviceInfo.prototype;
-      var info = proto ? Object.create(proto) : {};
-
-      env.overrides.set(info, { deviceId: "", kind: kind, label: "", groupId: "" });
-
-      Object.defineProperty(info, "deviceId", { value: "", enumerable: true, configurable: true });
-      Object.defineProperty(info, "kind", { value: kind, enumerable: true, configurable: true });
-      Object.defineProperty(info, "label", { value: "", enumerable: true, configurable: true });
-      Object.defineProperty(info, "groupId", { value: "", enumerable: true, configurable: true });
-
-      return info;
-    };
-
-    patch(protoOf(mediaDevices) || mediaDevices, "enumerateDevices", function enumerateDevices() {
-      return Promise.resolve([deviceInfo("audioinput"), deviceInfo("videoinput"), deviceInfo("audiooutput")]);
-    });
-
     patch(protoOf(mediaDevices) || mediaDevices, "getSupportedConstraints", function getSupportedConstraints() {
       return {
         aspectRatio: true, autoGainControl: true, channelCount: true, deviceId: true, displaySurface: true,
         echoCancellation: true, facingMode: true, frameRate: true, groupId: true, height: true,
         noiseSuppression: true, sampleRate: true, sampleSize: true, width: true,
       };
-    });
-  }
-
-  if (globalThis.navigator && globalThis.navigator.storage) {
-    patch(protoOf(globalThis.navigator.storage) || globalThis.navigator.storage, "estimate", function estimate() {
-      return Promise.resolve({ quota: 3221225472, usage: 0, usageDetails: {} });
-    });
-
-    patch(protoOf(globalThis.navigator.storage) || globalThis.navigator.storage, "persisted", function persisted() {
-      return Promise.resolve(false);
     });
   }
 
@@ -3242,235 +4599,6 @@
     });
   }
 
-  for (var aiIndex = 0; aiIndex < 4; aiIndex += 1) {
-    var aiName = ["LanguageDetector", "Translator", "Summarizer", "LanguageModel"][aiIndex];
-    var aiClass = globalThis[aiName];
-
-    if (!aiClass) continue;
-
-    patch(aiClass, "availability", function availability() { return Promise.resolve("available"); });
-    patch(aiClass, "create", function create() { return Promise.reject(new DOMException("Model not available", "NotSupportedError")); });
-  }
-
-  var audioParam = function (value) {
-    return {
-      value: value,
-      defaultValue: value,
-      minValue: -3.4028234663852886e38,
-      maxValue: 3.4028234663852886e38,
-      automationRate: "a-rate",
-      setValueAtTime: asNative(function setValueAtTime() { return this; }, "setValueAtTime"),
-      linearRampToValueAtTime: asNative(function linearRampToValueAtTime() { return this; }, "linearRampToValueAtTime"),
-      exponentialRampToValueAtTime: asNative(function exponentialRampToValueAtTime() { return this; }, "exponentialRampToValueAtTime"),
-      setTargetAtTime: asNative(function setTargetAtTime() { return this; }, "setTargetAtTime"),
-      cancelScheduledValues: asNative(function cancelScheduledValues() { return this; }, "cancelScheduledValues"),
-    };
-  };
-
-  var audioNode = function (kind, extra) {
-    var node = {
-      channelCount: 2,
-      channelCountMode: kind === "analyser" ? "max" : "explicit",
-      channelInterpretation: "speakers",
-      numberOfInputs: 1,
-      numberOfOutputs: 1,
-      connect: asNative(function connect(target) { return target; }, "connect"),
-      disconnect: asNative(function disconnect() { return undefined; }, "disconnect"),
-      addEventListener: addListener,
-      removeEventListener: removeListener,
-    };
-
-    if (extra) for (var key in extra) node[key] = extra[key];
-    return node;
-  };
-
-  var audioBuffer = function (channels, length, rate, samples) {
-    return {
-      numberOfChannels: channels,
-      length: length,
-      sampleRate: rate,
-      duration: length / rate,
-      getChannelData: asNative(function getChannelData(index) {
-        if (samples && (index === 0 || index === undefined)) return samples.slice(0, length);
-        return new Float32Array(length);
-      }, "getChannelData"),
-      copyFromChannel: asNative(function copyFromChannel() { return undefined; }, "copyFromChannel"),
-      copyToChannel: asNative(function copyToChannel() { return undefined; }, "copyToChannel"),
-    };
-  };
-
-  var renderedSamples = null;
-
-  var recordedChannel = function () {
-    if (renderedSamples !== null) return renderedSamples;
-    if (!traits.audio || !traits.audio.channel) return null;
-
-    var binary = globalThis.atob(traits.audio.channel);
-    var bytes = new Uint8Array(binary.length);
-
-    for (var index = 0; index < binary.length; index += 1) bytes[index] = binary.charCodeAt(index);
-
-    renderedSamples = new Float32Array(bytes.buffer, bytes.byteOffset, bytes.byteLength / 4);
-    return renderedSamples;
-  };
-
-  var audioFacts = snapshot.audio || {};
-
-  var patchAudio = function (constructor, offline) {
-    if (!constructor || !constructor.prototype) return;
-    var prototype = constructor.prototype;
-
-    var contextFacts = offline ? audioFacts.offline || {} : audioFacts.context || {};
-    var destinationFacts = audioFacts.destination || {};
-
-    var destination = audioNode("destination", {
-      maxChannelCount: offline ? destinationFacts.maxChannelCount || 1 : destinationFacts.maxChannelCount || 2,
-      channelCount: destinationFacts.channelCount || 2,
-      channelCountMode: destinationFacts.channelCountMode || "explicit",
-      channelInterpretation: destinationFacts.channelInterpretation || "speakers",
-      numberOfInputs: destinationFacts.numberOfInputs || 1,
-      numberOfOutputs: destinationFacts.numberOfOutputs || 0,
-    });
-
-    patchGetter(prototype, "destination", function () { return destination; });
-    patchGetter(prototype, "sampleRate", function () { return contextFacts.sampleRate || 44100; });
-    var liveState = contextFacts.state || "suspended";
-    patchGetter(prototype, "state", function () { return liveState; });
-    patchGetter(prototype, "currentTime", function () { return env.clock() / 1000; });
-    patchGetter(prototype, "listener", function () { return audioNode("listener", audioFacts.listener || {}); });
-
-    if (!offline) {
-      patchGetter(prototype, "baseLatency", function () { return contextFacts.baseLatency || 0; });
-      patchGetter(prototype, "outputLatency", function () { return contextFacts.outputLatency || 0; });
-    } else {
-      patchGetter(prototype, "length", function () { return contextFacts.length || 44100; });
-    }
-
-    patch(prototype, "close", function close() {
-      liveState = "closed";
-      return Promise.resolve();
-    });
-
-    patch(prototype, "resume", function resume() {
-      if (liveState !== "closed") liveState = "running";
-      return Promise.resolve();
-    });
-
-    patch(prototype, "suspend", function suspend() {
-      if (liveState !== "closed") liveState = "suspended";
-      return Promise.resolve();
-    });
-    patch(prototype, "createAnalyser", function createAnalyser() {
-      return audioNode("analyser", {
-        fftSize: 2048,
-        frequencyBinCount: 1024,
-        minDecibels: -100,
-        maxDecibels: -30,
-        smoothingTimeConstant: 0.8,
-        getFloatFrequencyData: asNative(function getFloatFrequencyData(array) {
-          for (var index = 0; index < array.length; index += 1) array[index] = -100;
-          return undefined;
-        }, "getFloatFrequencyData"),
-        getByteFrequencyData: asNative(function getByteFrequencyData() { return undefined; }, "getByteFrequencyData"),
-        getFloatTimeDomainData: asNative(function getFloatTimeDomainData() { return undefined; }, "getFloatTimeDomainData"),
-      });
-    });
-    patch(prototype, "createOscillator", function createOscillator() {
-      return audioNode("oscillator", {
-        type: "sine",
-        frequency: audioParam(440),
-        detune: audioParam(0),
-        start: asNative(function start() { return undefined; }, "start"),
-        stop: asNative(function stop() { return undefined; }, "stop"),
-      });
-    });
-    patch(prototype, "createGain", function createGain() {
-      return audioNode("gain", { gain: audioParam(1) });
-    });
-    patch(prototype, "createDynamicsCompressor", function createDynamicsCompressor() {
-      return audioNode("compressor", {
-        threshold: audioParam(-24),
-        knee: audioParam(30),
-        ratio: audioParam(12),
-        attack: audioParam(0.003),
-        release: audioParam(0.25),
-        reduction: 0,
-      });
-    });
-    patch(prototype, "createBuffer", function createBuffer(channels, length, rate) {
-      return audioBuffer(channels || 1, length || 1, rate || 44100);
-    });
-    patch(prototype, "createBufferSource", function createBufferSource() {
-      return audioNode("bufferSource", {
-        buffer: null,
-        loop: false,
-        playbackRate: audioParam(1),
-        start: asNative(function start() { return undefined; }, "start"),
-        stop: asNative(function stop() { return undefined; }, "stop"),
-      });
-    });
-    patch(prototype, "createScriptProcessor", function createScriptProcessor() {
-      return audioNode("scriptProcessor", { onaudioprocess: null, bufferSize: 4096 });
-    });
-    patch(prototype, "createChannelMerger", function createChannelMerger() { return audioNode("merger"); });
-    patch(prototype, "createChannelSplitter", function createChannelSplitter() { return audioNode("splitter"); });
-    patch(prototype, "createStereoPanner", function createStereoPanner() { return audioNode("panner", { pan: audioParam(0) }); });
-    patch(prototype, "decodeAudioData", function decodeAudioData() { return Promise.resolve(audioBuffer(1, 1024, 44100)); });
-
-    if (offline) {
-      var completeHandlers = new WeakMap();
-
-      try {
-        Object.defineProperty(prototype, "oncomplete", {
-          get: asNative(function () { return completeHandlers.get(this) || null; }, "get oncomplete"),
-          set: asNative(function (handler) {
-            if (typeof handler === "function") completeHandlers.set(this, handler);
-            else completeHandlers.delete(this);
-          }, "set oncomplete"),
-          enumerable: true,
-          configurable: true,
-        });
-      } catch (error) {}
-
-      patch(prototype, "startRendering", function startRendering() {
-        var context = this;
-        var samples = recordedChannel();
-        var length = samples ? samples.length : contextFacts.length || 44100;
-        var rate = traits.audio ? traits.audio.sampleRate || 44100 : 44100;
-        var buffer = audioBuffer(1, length, rate, samples);
-
-        liveState = "running";
-
-        return new Promise(function (resolve) {
-          later(function () {
-            liveState = "closed";
-            env.spend(recordedDuration("audio"));
-
-            var event = makeEvent("complete", { renderedBuffer: buffer });
-
-            try {
-              if (typeof context.oncomplete === "function") context.oncomplete(event);
-            } catch (error) {}
-
-            try {
-              env.dispatch(context, event);
-            } catch (error) {}
-
-            resolve(buffer);
-          }, 0);
-        });
-      });
-    }
-  };
-
-  patchAudio(globalThis.AudioContext, false);
-  patchAudio(globalThis.OfflineAudioContext, true);
-
-  var requestInitKeys = [
-    "adAuctionHeaders", "attributionReporting", "body", "browsingTopics", "cache", "credentials", "duplex",
-    "headers", "integrity", "keepalive", "method", "mode", "priority", "privateToken", "redirect", "referrer",
-    "referrerPolicy", "sharedStorageWritable", "signal", "targetAddressSpace",
-  ];
 
   var alsoAsks = { attributionReporting: true };
 
@@ -3500,33 +4628,7 @@
     return out;
   };
 
-  var requestState = new WeakMap();
-  var resolveAgainstPage = function (url) {
-    try {
-      return new URL(url, globalThis.location.href).href;
-    } catch (error) {
-      return url;
-    }
-  };
-
-  if (typeof globalThis.Request === "function") {
-    patchGetter(globalThis.Request.prototype, "headers", function () {
-      var held = requestState.get(this);
-      return held ? held.headers : undefined;
-    });
-    ["url", "method", "body"].forEach(function (field) {
-      patchGetter(globalThis.Request.prototype, field, function () {
-        var held = requestState.get(this);
-        return held ? held[field] : undefined;
-      });
-    });
-    patch(globalThis.Request.prototype, "clone", function clone() {
-      return new globalThis.Request(this);
-    });
-  }
-
   var dictionaries = {
-    Request: requestInitKeys,
     UIEvent: ["bubbles", "cancelable", "composed", "detail", "sourceCapabilities", "view"],
     InputEvent: ["bubbles", "cancelable", "composed", "detail", "sourceCapabilities", "view", "data", "dataTransfer", "inputType", "isComposing", "targetRanges"],
   };
@@ -3536,21 +4638,11 @@
       if (typeof globalThis[name] !== "function") return;
 
       env.behaviour["window." + name] = function (first, second) {
-        var init = name === "Request" ? second : second;
+        var init = second;
         var read = readInit(init, keys, alsoAsks);
 
         try {
-          if (name === "Request") {
-            var source = first !== null && typeof first === "object" ? requestState.get(first) : undefined;
-            requestState.set(this, {
-              url: resolveAgainstPage(typeof first === "string" ? first : (source && source.url) || String(first && first.url)),
-              method: String(read.method || (source && source.method) || "GET").toUpperCase(),
-              headers: new globalThis.Headers(read.headers !== undefined ? read.headers : source && source.headers),
-              body: read.body !== undefined ? read.body : source && source.body,
-            });
-          } else {
-            this.type = String(first);
-          }
+          this.type = String(first);
         } catch (error) {}
 
         return undefined;
@@ -4223,43 +5315,6 @@
     patch(globalThis.Document.prototype, "getAnimations", function getAnimations() { return []; });
   }
 
-  if (globalThis.SpeechSynthesis && globalThis.SpeechSynthesis.prototype && globalThis.SpeechSynthesisVoice) {
-    var voiceList = null;
-
-    patch(globalThis.SpeechSynthesis.prototype, "getVoices", function getVoices() {
-      if (voiceList) return voiceList.slice();
-
-      var recorded = env.recordGraphics ? env.recordGraphics("window", "getVoices", []) : null;
-      var described = [];
-
-      if (typeof recorded === "string" && recorded) {
-        try {
-          described = JSON.parse(recorded);
-        } catch (error) {
-          described = [];
-        }
-      }
-
-      voiceList = [];
-
-      for (var index = 0; index < described.length; index += 1) {
-        var voice = Object.create(globalThis.SpeechSynthesisVoice.prototype);
-
-        env.overrides.set(voice, {
-          voiceURI: described[index].voiceURI,
-          name: described[index].name,
-          lang: described[index].lang,
-          localService: described[index].localService,
-          default: described[index].default,
-        });
-
-        voiceList.push(voice);
-      }
-
-      return voiceList.slice();
-    });
-  }
-
   if (globalThis.FontFaceSet && globalThis.FontFaceSet.prototype) {
     var fontFaces = new WeakMap();
     var facesOf = function (holder) {
@@ -4306,15 +5361,22 @@
     var tokenOwner = new WeakMap();
     var tokenLists = new WeakMap();
 
+    // Each list reads and writes one attribute of its element (class for classList, rel for
+    // relList, sandbox, blocking), and knows the tokens it supports (none for classList).
+    var tokenAttribute = new WeakMap();
+    var tokenSupported = new WeakMap();
+
     var tokensOf = function (list) {
       var owner = tokenOwner.get(list);
-      var text = owner ? String(owner.getAttribute("class") || "") : "";
-      return text.split(/\s+/).filter(function (token) { return token.length > 0; });
+      var text = owner ? String(owner.getAttribute(tokenAttribute.get(list) || "class") || "") : "";
+      var seen = [];
+      text.split(/[\t\n\f\r ]+/).forEach(function (token) { if (token.length > 0 && seen.indexOf(token) === -1) seen.push(token); });
+      return seen;
     };
 
     var writeTokens = function (list, tokens) {
       var owner = tokenOwner.get(list);
-      if (owner) owner.setAttribute("class", tokens.join(" "));
+      if (owner) owner.setAttribute(tokenAttribute.get(list) || "class", tokens.join(" "));
     };
 
     var tokenProto = globalThis.DOMTokenList.prototype;
@@ -4362,21 +5424,36 @@
       return true;
     });
 
-    patch(tokenProto, "supports", function supports() { return true; });
+    patch(tokenProto, "supports", function supports(token) {
+      var supported = tokenSupported.get(this);
+      if (!supported) throw env.hideFrames(new TypeError("Failed to execute 'supports' on 'DOMTokenList': DOMTokenList has no supported tokens."));
+      return supported.indexOf(String(token).toLowerCase()) !== -1;
+    });
     patch(tokenProto, "toString", function toString() { return tokensOf(this).join(" "); });
     patchGetter(tokenProto, "length", function () { return tokensOf(this).length; });
     patchGetter(tokenProto, "value", function () { return tokensOf(this).join(" "); });
     defineIterable(tokenProto, function () { return tokensOf(this); }, "list");
 
-    patchGetter(globalThis.Element.prototype, "classList", function () {
-      var existing = tokenLists.get(this);
-      if (existing) return existing;
+    // The element's token list over `attribute`, the same object each time.
+    var tokenListOf = function (element, attribute, supported) {
+      var lists = tokenLists.get(element);
+      if (!lists) {
+        lists = Object.create(null);
+        tokenLists.set(element, lists);
+      }
+      if (lists[attribute]) return lists[attribute];
 
       var list = Object.create(tokenProto);
-      tokenOwner.set(list, this);
-      tokenLists.set(this, list);
+      tokenOwner.set(list, element);
+      tokenAttribute.set(list, attribute);
+      if (supported) tokenSupported.set(list, supported);
+      lists[attribute] = list;
       return list;
-    });
+    };
+
+    env.tokenList = tokenListOf;
+
+    patchGetter(globalThis.Element.prototype, "classList", function () { return tokenListOf(this, "class", null); });
   }
 
   if (typeof globalThis.FormData === "function") {
@@ -4387,65 +5464,6 @@
 
     installPairApi(globalThis.FormData, false);
   }
-
-  if (typeof globalThis.Headers === "function") {
-    env.behaviour["window.Headers"] = function (init) {
-      if (init !== null && (typeof init === "object" || typeof init === "function")) {
-        try {
-          init[Symbol.iterator];
-        } catch (error) {}
-      }
-
-      pairState.set(this, pairsFrom(init).map(function (pair) { return [String(pair[0]).toLowerCase(), pair[1]]; }));
-      return undefined;
-    };
-
-    installPairApi(globalThis.Headers, true);
-  }
-
-  globalThis.fetch = asNative(function fetch(input, init) {
-    var url = typeof input === "string" ? input : input && input.url;
-    var read = readInit(init, requestInitKeys, alsoAsks);
-    var source = input !== null && typeof input === "object" ? requestState.get(input) : undefined;
-    var method = read.method || (source && source.method) || "GET";
-    var body = read.body !== undefined ? read.body : source && source.body;
-    var headers = {};
-    pairsFrom(read.headers !== undefined ? read.headers : source && source.headers).forEach(function (pair) {
-      headers[String(pair[0]).toLowerCase()] = pair[1];
-    });
-
-    record("fetch", { url: url, method: method });
-
-    return new Promise(function (resolve) {
-      bridge.request(
-        method,
-        String(url),
-        JSON.stringify(headers || {}),
-        body,
-        function (status, headerJson, text) {
-          var headers = JSON.parse(headerJson);
-
-          var answer = {
-            ok: status >= 200 && status < 300,
-            status: status,
-            url: String(url),
-            headers: {
-              get: function (name) {
-                var value = headers[String(name).toLowerCase()];
-                return value === undefined ? null : value;
-              },
-              has: function (name) { return headers[String(name).toLowerCase()] !== undefined; },
-              forEach: function (visit) { Object.keys(headers).forEach(function (name) { visit(headers[name], name); }); },
-            },
-            text: function () { return Promise.resolve(text); },
-            json: function () { return Promise.resolve(JSON.parse(text)); },
-            clone: function () { return answer; },
-          };
-          resolve(answer);
-        },
-      );
-    });
-  }, "fetch");
 
   var embedderWindow = null;
 
@@ -4519,14 +5537,12 @@
             get: asNative(function () {
               if (!acrossOrigins) return embedder[field];
 
-              var error = new Error(
+              throw domException(
                 "Failed to read a named property '" + field + "' from 'Location': Blocked a frame with origin \"" +
                   ourOrigin +
                   "\" from accessing a cross-origin frame.",
+                "SecurityError",
               );
-
-              error.name = "SecurityError";
-              throw env.hideFrames(error);
             }, "get " + field),
             enumerable: true,
             configurable: true,
@@ -4540,17 +5556,7 @@
     } catch (error) {}
   }
 
-  patch(parent, "postMessage", function postMessage(message, origin) {
-    refuseUncloneable(message, "Window");
-    record("postMessage", { message: typeof message === "string" ? message : "[object]", origin: origin });
-
-    try {
-      // A frame's message goes to the window embedding it, from this frame's origin, with this
-      // frame's window as its source.
-      if (parent !== globalThis && typeof env.toEmbedder === "function") env.toEmbedder(message, globalThis.location.origin, globalThis);
-      else if (parent !== globalThis && bridge.deliverMessage) bridge.deliverMessage(parent, message, String(origin ?? "*"), globalThis);
-    } catch (error) {}
-  });
+  // parent.postMessage (a frame messaging the window embedding it) is messaging.js's.
 
   try {
     var chromeApp = globalThis.chrome && globalThis.chrome.app;
@@ -4643,50 +5649,11 @@
     var label = cloneLabel(message, [], 0);
     if (!label) return;
 
-    var error = new Error("Failed to execute '" + (method || "postMessage") + "' on '" + where + "': " + label + " could not be cloned.");
-    error.name = "DataCloneError";
-    throw env.hideFrames(error);
+    throw domException("Failed to execute '" + (method || "postMessage") + "' on '" + where + "': " + label + " could not be cloned.", "DataCloneError");
   };
 
-  if (typeof globalThis.structuredClone === "function") {
-    patch(globalThis, "structuredClone", function structuredClone(value) {
-      refuseUncloneable(value, "Window", "structuredClone");
-      return value;
-    });
-  }
-
-  patch(globalThis, "postMessage", function postMessage(message, origin) {
-    refuseUncloneable(message, "Window");
-    record("selfMessage", { message: typeof message === "string" ? message : "[object]", origin: origin });
-
-    var payload = message;
-    var from = String(origin ?? "*");
-
-    env.later(function () { env.deliverMessage(payload, from, globalThis); }, 0);
-  });
-
-  env.deliverMessage = function (message, origin, source) {
-    var event = makeEvent("message");
-
-    event.data = message;
-    event.origin = origin === "*" ? (globalThis.location ? globalThis.location.origin : "") : origin;
-    event.source = source ?? null;
-    event.lastEventId = "";
-    event.ports = [];
-
-    try {
-      dispatch(globalThis, event);
-    } catch (error) {
-      record("messageError", { message: String(error && error.message) });
-    }
-  };
-
-  // Messages the frames this window embeds post to it arrive as a task of its own, as in a browser.
-  if (typeof bridge.adoptFrames === "function") {
-    bridge.adoptFrames(function (message, origin, source) {
-      env.later(function () { env.deliverMessage(message, origin, source); }, 0);
-    });
-  }
+  // structuredClone, window.postMessage and message delivery are messaging.js's, which clones
+  // as Chrome does (refuseUncloneable stays for callers that only need the refusal).
 
   var mediaNumber = function (name) {
     var dpr = Number(globalThis.devicePixelRatio) || 1;
@@ -4938,240 +5905,6 @@
         }
       }
     } catch (error) {}
-  }
-
-  var permissionStates = {
-    accelerometer: "granted",
-    "ambient-light-sensor": "prompt",
-    "background-fetch": "prompt",
-    "background-sync": "granted",
-    "bluetooth-le-scan": "prompt",
-    camera: "prompt",
-    "clipboard-read": "prompt",
-    "clipboard-write": "granted",
-    "display-capture": "prompt",
-    geolocation: "prompt",
-    gyroscope: "granted",
-    "idle-detection": "prompt",
-    "local-fonts": "prompt",
-    magnetometer: "granted",
-    microphone: "prompt",
-    midi: "granted",
-    "nfc": "prompt",
-    notifications: "prompt",
-    "payment-handler": "prompt",
-    "periodic-background-sync": "prompt",
-    "persistent-storage": "prompt",
-    push: "prompt",
-    "screen-wake-lock": "prompt",
-    "storage-access": "prompt",
-    "system-wake-lock": "prompt",
-    "top-level-storage-access": "prompt",
-    "window-management": "prompt",
-    "captured-surface-control": "prompt",
-  };
-
-  if (globalThis.navigator && globalThis.navigator.permissions) {
-    var statusPrototype = globalThis.PermissionStatus && globalThis.PermissionStatus.prototype;
-
-    var makeStatus = function (name, state) {
-      var status = statusPrototype ? Object.create(statusPrototype) : {};
-
-      try {
-        Object.defineProperty(status, "state", { get: asNative(function () { return state; }, "get state"), configurable: true, enumerable: true });
-        Object.defineProperty(status, "name", { get: asNative(function () { return name; }, "get name"), configurable: true, enumerable: true });
-        Object.defineProperty(status, "onchange", { value: null, writable: true, configurable: true, enumerable: true });
-      } catch (error) {}
-
-      if (!statusPrototype) {
-        status.addEventListener = addListener;
-        status.removeEventListener = removeListener;
-      }
-
-      return status;
-    };
-
-    patch(globalThis.navigator.permissions, "query", function query(descriptor) {
-      var name = descriptor && descriptor.name !== undefined ? String(descriptor.name) : "";
-
-      if (!Object.prototype.hasOwnProperty.call(permissionStates, name)) {
-        return Promise.reject(
-          env.hideFrames(new TypeError(
-            "Failed to execute 'query' on 'Permissions': Failed to read the 'name' property from 'PermissionDescriptor': The provided value '" +
-              name +
-              "' is not a valid enum value of type PermissionName.",
-          )),
-        );
-      }
-
-      return Promise.resolve(makeStatus(name, permissionStates[name]));
-    });
-  }
-
-  var webrtcFacts = traits.webrtc && traits.webrtc.localSdp ? traits.webrtc : null;
-
-  if (webrtcFacts && globalThis.RTCPeerConnection) {
-    var rtcSeed = 0x9e3779b9;
-
-    var rtcRandom = function () {
-      rtcSeed ^= rtcSeed << 13;
-      rtcSeed ^= rtcSeed >>> 17;
-      rtcSeed ^= rtcSeed << 5;
-      return (rtcSeed >>> 0) / 4294967296;
-    };
-
-    var rtcPick = function (alphabet, length) {
-      var out = "";
-      for (var index = 0; index < length; index += 1) out += alphabet.charAt(Math.floor(rtcRandom() * alphabet.length));
-      return out;
-    };
-
-    var ICE_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    var HEX_ALPHABET = "0123456789ABCDEF";
-
-    var freshSdp = function () {
-      var session = String(Math.floor(rtcRandom() * 9) + 1);
-      for (var digit = 1; digit < 19; digit += 1) session += String(Math.floor(rtcRandom() * 10));
-
-      var fingerprint = [];
-      for (var octet = 0; octet < 32; octet += 1) fingerprint.push(rtcPick(HEX_ALPHABET, 2));
-
-      return String(webrtcFacts.localSdp)
-        .replace(/o=- \d+ /, "o=- " + session + " ")
-        .replace(/a=ice-ufrag:[^\r\n]*/g, "a=ice-ufrag:" + rtcPick(ICE_ALPHABET, 4))
-        .replace(/a=ice-pwd:[^\r\n]*/g, "a=ice-pwd:" + rtcPick(ICE_ALPHABET, 24))
-        .replace(/a=fingerprint:sha-256 [^\r\n]*/g, "a=fingerprint:sha-256 " + fingerprint.join(":"));
-    };
-
-    var descriptionPrototype = globalThis.RTCSessionDescription && globalThis.RTCSessionDescription.prototype;
-
-    var makeDescription = function (type, sdp) {
-      var description = descriptionPrototype ? Object.create(descriptionPrototype) : {};
-
-      try {
-        Object.defineProperty(description, "type", { get: asNative(function () { return type; }, "get type"), configurable: true, enumerable: true });
-        Object.defineProperty(description, "sdp", { get: asNative(function () { return sdp; }, "get sdp"), configurable: true, enumerable: true });
-        Object.defineProperty(description, "toJSON", { value: asNative(function toJSON() { return { type: type, sdp: sdp }; }, "toJSON"), writable: true, configurable: true, enumerable: true });
-      } catch (error) {}
-
-      return description;
-    };
-
-    var rtcStates = new WeakMap();
-
-    var rtcStateOf = function (connection) {
-      var state = rtcStates.get(connection);
-
-      if (!state) {
-        state = { local: null, remote: null, signaling: "stable", closed: false };
-        rtcStates.set(connection, state);
-      }
-
-      return state;
-    };
-
-    var rtcPrototype = globalThis.RTCPeerConnection.prototype;
-
-    var rtcReader = function (name, read) {
-      try {
-        var previous = Object.getOwnPropertyDescriptor(rtcPrototype, name);
-
-        Object.defineProperty(rtcPrototype, name, {
-          get: asNative(function () { return read(rtcStateOf(this)); }, "get " + name),
-          enumerable: previous ? previous.enumerable : true,
-          configurable: true,
-        });
-      } catch (error) {}
-    };
-
-    rtcReader("localDescription", function (state) { return state.closed ? null : state.local; });
-    rtcReader("currentLocalDescription", function (state) { return state.closed ? null : state.local; });
-    rtcReader("pendingLocalDescription", function (state) { return state.closed ? null : state.local; });
-    rtcReader("remoteDescription", function (state) { return state.remote; });
-    rtcReader("currentRemoteDescription", function (state) { return state.remote; });
-    rtcReader("pendingRemoteDescription", function (state) { return state.remote; });
-    rtcReader("signalingState", function (state) { return state.closed ? "closed" : state.signaling; });
-    rtcReader("iceGatheringState", function (state) { return state.closed ? "closed" : webrtcFacts.iceGatheringState || "new"; });
-    rtcReader("iceConnectionState", function (state) { return state.closed ? "closed" : "new"; });
-    rtcReader("connectionState", function (state) { return state.closed ? "closed" : webrtcFacts.connectionState || "new"; });
-    rtcReader("canTrickleIceCandidates", function () { return null; });
-    rtcReader("sctp", function () { return null; });
-
-    var channelPrototype = globalThis.RTCDataChannel && globalThis.RTCDataChannel.prototype;
-
-    patch(rtcPrototype, "createDataChannel", function createDataChannel(label) {
-      var channel = channelPrototype ? Object.create(channelPrototype) : {};
-      var name = label === undefined ? "" : String(label);
-
-      try {
-        Object.defineProperty(channel, "label", { get: asNative(function () { return name; }, "get label"), configurable: true, enumerable: true });
-        Object.defineProperty(channel, "readyState", { get: asNative(function () { return "connecting"; }, "get readyState"), configurable: true, enumerable: true });
-      } catch (error) {}
-
-      if (!channelPrototype) {
-        channel.close = asNative(function close() { return undefined; }, "close");
-        channel.addEventListener = addListener;
-        channel.removeEventListener = removeListener;
-      }
-
-      return channel;
-    });
-
-    patch(rtcPrototype, "createOffer", function createOffer() {
-      env.spend(recordedDuration("webrtc"));
-      return Promise.resolve(makeDescription("offer", freshSdp()));
-    });
-
-    patch(rtcPrototype, "createAnswer", function createAnswer() {
-      return Promise.resolve(makeDescription("answer", freshSdp()));
-    });
-
-    patch(rtcPrototype, "setLocalDescription", function setLocalDescription(description) {
-      var state = rtcStateOf(this);
-      var type = description && description.type !== undefined ? String(description.type) : "offer";
-      var sdp = description && description.sdp !== undefined ? String(description.sdp) : freshSdp();
-
-      state.local = makeDescription(type, sdp);
-      state.signaling = type === "offer" ? "have-local-offer" : "stable";
-
-      return Promise.resolve(undefined);
-    });
-
-    patch(rtcPrototype, "setRemoteDescription", function setRemoteDescription(description) {
-      var state = rtcStateOf(this);
-      var type = description && description.type !== undefined ? String(description.type) : "answer";
-      var sdp = description && description.sdp !== undefined ? String(description.sdp) : "";
-
-      state.remote = makeDescription(type, sdp);
-      state.signaling = type === "offer" ? "have-remote-offer" : "stable";
-
-      return Promise.resolve(undefined);
-    });
-
-    patch(rtcPrototype, "addIceCandidate", function addIceCandidate() { return Promise.resolve(undefined); });
-    patch(rtcPrototype, "getStats", function getStats() { return Promise.resolve(new Map()); });
-    patch(rtcPrototype, "getSenders", function getSenders() { return []; });
-    patch(rtcPrototype, "getReceivers", function getReceivers() { return []; });
-    patch(rtcPrototype, "getTransceivers", function getTransceivers() { return []; });
-    patch(rtcPrototype, "getConfiguration", function getConfiguration() {
-      var recorded = webrtcFacts.configuration || {};
-      var copy = {};
-      var names = Object.keys(recorded);
-
-      for (var index = 0; index < names.length; index += 1) copy[names[index]] = recorded[names[index]];
-
-      return copy;
-    });
-
-    patch(rtcPrototype, "setConfiguration", function setConfiguration() { return undefined; });
-    patch(rtcPrototype, "restartIce", function restartIce() { return undefined; });
-
-    patch(rtcPrototype, "close", function close() {
-      var state = rtcStateOf(this);
-      state.closed = true;
-      state.signaling = "closed";
-      return undefined;
-    });
   }
 
   if (globalThis.CSS && typeof globalThis.CSS === "object") {
@@ -5529,11 +6262,8 @@
             return raw === undefined ? "" : raw;
           }, "get " + property),
           set: asNative(function (value) {
-            var state = nodeState(this);
-            if (!state) return;
-            state.attrs[attribute] = String(value);
-            state[property] = String(value);
-            env.syncAttributes(this);
+            if (!nodeState(this)) return;
+            setAttr(this, attribute, String(value));
           }, "set " + property),
           enumerable: true,
           configurable: true,
@@ -5559,8 +6289,7 @@
             set: function (holder, key, value) {
               if (typeof key !== "string") return true;
               var attribute = "data-" + key.replace(/[A-Z]/g, function (letter) { return "-" + letter.toLowerCase(); });
-              attributesOf(element)[attribute] = String(value);
-              env.syncAttributes(element);
+              setAttr(element, attribute, String(value));
               return true;
             },
             has: function (holder, key) {
@@ -5594,8 +6323,1938 @@
     patch(globalThis.EventTarget.prototype, "addEventListener", addListener);
     patch(globalThis.EventTarget.prototype, "removeEventListener", removeListener);
     patch(globalThis.EventTarget.prototype, "dispatchEvent", function dispatchEvent(event) {
-      dispatch(this, event);
-      return true;
+      return dispatch(this, event);
     });
   }
+
+  // ---- Documents, markup, cloning and selectors ------------------------------------------------
+  //
+  // Every document is a node with its own tree: the page's, the ones scripts make (new Document,
+  // DOMImplementation, DOMParser) and the inert ones that hold template contents. Markup is read
+  // and written by parse5 (the WHATWG parser and serializer), selectors are matched by css-select
+  // over the nodes' state, and nodes clone, compare and move between documents as the DOM
+  // standard says.
+  var documentField;
+  var attributeKey;
+  var retag;
+
+  (function installDocuments() {
+    var HTML_NS = "http://www.w3.org/1999/xhtml";
+    var SVG_NS = "http://www.w3.org/2000/svg";
+    var MATHML_NS = "http://www.w3.org/1998/Math/MathML";
+    var XLINK_NS = "http://www.w3.org/1999/xlink";
+    var XML_NS = "http://www.w3.org/XML/1998/namespace";
+    var XMLNS_NS = "http://www.w3.org/2000/xmlns/";
+
+    var docProto = Document && Document.prototype;
+    var mainState = nodeState(document);
+    if (!docProto || !mainState) return;
+
+    mainState.isHTML = true;
+    mainState.contentType = "text/html";
+    mainState.mode = "no-quirks";
+    mainState.scripting = true;
+    mainState.main = true;
+
+    var typeError = function (message) { return env.hideFrames(new TypeError(message)); };
+    var required = function (args, count, method, iface) {
+      if (args.length < count) {
+        throw typeError("Failed to execute '" + method + "' on '" + iface + "': " + count + " argument" + (count === 1 ? "" : "s") + " required, but only " + args.length + " present.");
+      }
+    };
+
+    var stateOf = function (node) { return nodeState(node); };
+    var isDocument = function (node) { var state = stateOf(node); return Boolean(state && state.nodeType === 9); };
+    var ownerOf = function (node) { var state = stateOf(node); return !state ? document : state.nodeType === 9 ? node : state.ownerDocument || document; };
+    var isHTMLDoc = function (doc) { var state = stateOf(doc); return Boolean(state && state.isHTML); };
+    var namespaceOf = function (state) { return state.namespaceURI === undefined ? HTML_NS : state.namespaceURI; };
+    var isHTMLElement = function (state) { return Boolean(state) && state.nodeType === 1 && namespaceOf(state) === HTML_NS; };
+
+    // ---- Nodes of every kind, for any document ----
+
+    var SVG_INTERFACES = { svg: "SVGSVGElement", tspan: "SVGTSpanElement", textPath: "SVGTextPathElement", mpath: "SVGMPathElement", a: "SVGAElement" };
+
+    var foreignPrototype = function (namespace, local) {
+      var holder = null;
+      if (namespace === SVG_NS) {
+        var name = SVG_INTERFACES[local] ||
+          (local.indexOf("fe") === 0 && local.length > 2 ? "SVGFE" + local.slice(2) + "Element" : "SVG" + local.charAt(0).toUpperCase() + local.slice(1) + "Element");
+        holder = (globalThis[name] && globalThis[name].prototype) || (globalThis.SVGElement && globalThis.SVGElement.prototype);
+      } else if (namespace === MATHML_NS) {
+        holder = globalThis.MathMLElement && globalThis.MathMLElement.prototype;
+      }
+      return holder || (globalThis.Element && globalThis.Element.prototype) || Object.prototype;
+    };
+
+    // An element in any namespace, as createElementNS makes it: HTML ones are the DOM's own
+    // elements (their interface by tag); others keep their name's case and their namespace.
+    var makeElementNS = function (namespace, qualified, owner) {
+      var ns = namespace === undefined || namespace === null || namespace === "" ? null : String(namespace);
+      var name = String(qualified);
+      var colon = name.indexOf(":");
+      var prefix = colon === -1 ? null : name.slice(0, colon);
+      var local = colon === -1 ? name : name.slice(colon + 1);
+      var doc = owner || document;
+      var element;
+      var state;
+
+      if (ns === HTML_NS) {
+        element = makeElement(local, doc);
+        state = stateOf(element);
+        state.prefix = prefix;
+        if (!isHTMLDoc(doc) || local !== local.toLowerCase()) {
+          state.localName = local;
+          state.tagName = name;
+          state.nodeName = name;
+        }
+        if (isHTMLDoc(doc)) {
+          state.tagName = name.toUpperCase();
+          state.nodeName = state.tagName;
+        }
+        return element;
+      }
+
+      element = Object.create(foreignPrototype(ns, local));
+      elementCount += 1;
+      state = {
+        tag: local, handle: "element" + elementCount, html: "", frame: undefined, attrs: {}, attrNS: {},
+        tagName: name, nodeName: name, localName: local, namespaceURI: ns, prefix: prefix, nodeType: 1,
+        children: [], childNodes: [], childElementCount: 0, firstElementChild: null, lastElementChild: null,
+        previousElementSibling: null, nextElementSibling: null, attributes: [], style: null, parentNode: null,
+        parentElement: null, firstChild: null, lastChild: null, nextSibling: null, previousSibling: null,
+        ownerDocument: doc, textContent: "", value: "", className: "", id: "", src: "", width: 0, height: 0,
+        offsetWidth: 0, offsetHeight: 0, clientWidth: 0, clientHeight: 0,
+      };
+      state.style = makeStyle(element);
+      elementState.set(element, state);
+      styleOwners.set(state.style, element);
+      return element;
+    };
+
+    env.makeElementNS = makeElementNS;
+
+    // An element's tagName (and nodeName) as its node document makes it: an HTML element in an HTML
+    // document is upper-cased, anything else keeps its qualified name.
+    retag = function (state, owner) {
+      var qualified = (state.prefix ? state.prefix + ":" : "") + (state.localName || state.tag);
+      state.tagName = namespaceOf(state) === HTML_NS && isHTMLDoc(owner) ? qualified.toUpperCase() : qualified;
+      state.nodeName = state.tagName;
+    };
+
+    var makeDoctype = function (name, publicId, systemId, owner) {
+      var holder = globalThis.DocumentType && globalThis.DocumentType.prototype;
+      var node = holder ? Object.create(holder) : {};
+      elementState.set(node, {
+        nodeType: 10, nodeName: String(name), name: String(name), publicId: String(publicId || ""), systemId: String(systemId || ""),
+        parentNode: null, parentElement: null, ownerDocument: owner || document, previousSibling: null, nextSibling: null,
+        childNodes: [], attrs: {}, tag: "#doctype",
+      });
+      return node;
+    };
+
+    var DOCTYPE_FIELDS = ["name", "publicId", "systemId"];
+    if (globalThis.DocumentType && globalThis.DocumentType.prototype) {
+      DOCTYPE_FIELDS.forEach(function (field) {
+        patchGetter(globalThis.DocumentType.prototype, field, function () {
+          var state = stateOf(this);
+          if (!state || state.nodeType !== 10) throw typeError("Illegal invocation");
+          return state[field] === undefined ? (field === "name" ? "html" : "") : state[field];
+        });
+      });
+    }
+
+    // A document of `iface` (Document, HTMLDocument, XMLDocument): a node with its own tree.
+    var makeDocument = function (iface, fields) {
+      var holder = (globalThis[iface] && globalThis[iface].prototype) || docProto;
+      var doc = Object.create(holder);
+      var state = {
+        nodeType: 9, nodeName: "#document", parentNode: null, parentElement: null, ownerDocument: null,
+        previousSibling: null, nextSibling: null, childNodes: [], children: [], attrs: {}, tag: "#document",
+        isHTML: Boolean(fields.isHTML), contentType: fields.contentType, URL: fields.URL || "about:blank",
+        mode: fields.mode || "no-quirks", scripting: false, inert: true,
+      };
+      elementState.set(doc, state);
+      relink(doc);
+      return doc;
+    };
+
+    env.makeDocument = makeDocument;
+
+    var appendQuietly = function (parent, child) { insertChild(parent, child, null, "appendChild", true); return child; };
+
+    // The inert document a document's template contents belong to (one per document, as Chrome).
+    var templateOwners = new WeakMap();
+    var templateOwner = function (doc) {
+      var state = stateOf(doc);
+      if (state && state.templateOwner) return doc;
+      var found = templateOwners.get(doc);
+      if (!found) {
+        found = makeDocument("HTMLDocument", { isHTML: isHTMLDoc(doc), contentType: isHTMLDoc(doc) ? "text/html" : "application/xml" });
+        stateOf(found).templateOwner = true;
+        templateOwners.set(doc, found);
+      }
+      return found;
+    };
+
+    var templateContent = function (template) {
+      var state = stateOf(template);
+      if (!state.content) state.content = makeFragment(templateOwner(ownerOf(template)));
+      return state.content;
+    };
+
+    if (globalThis.HTMLTemplateElement && globalThis.HTMLTemplateElement.prototype) {
+      patchGetter(globalThis.HTMLTemplateElement.prototype, "content", function () {
+        var state = stateOf(this);
+        if (!state || state.tag !== "template") throw typeError("Illegal invocation");
+        return templateContent(this);
+      });
+    }
+
+    // ---- Walking trees ----
+
+    var eachDescendant = function (root, visit) {
+      var stack = (stateOf(root) && stateOf(root).childNodes || []).slice().reverse();
+      while (stack.length) {
+        var node = stack.pop();
+        if (visit(node) === false) return;
+        var kids = stateOf(node) ? stateOf(node).childNodes : null;
+        if (kids) for (var index = kids.length - 1; index >= 0; index -= 1) stack.push(kids[index]);
+      }
+    };
+
+    var elementsUnder = function (root, test) {
+      var found = [];
+      eachDescendant(root, function (node) {
+        var state = stateOf(node);
+        if (state && state.nodeType === 1 && (!test || test(node, state))) found.push(node);
+      });
+      return found;
+    };
+
+    var firstUnder = function (root, test) {
+      var found = null;
+      eachDescendant(root, function (node) {
+        var state = stateOf(node);
+        if (state && state.nodeType === 1 && test(node, state)) {
+          found = node;
+          return false;
+        }
+      });
+      return found;
+    };
+
+    var childElement = function (parent, test) {
+      var kids = stateOf(parent) ? stateOf(parent).childNodes : [];
+      for (var index = 0; index < kids.length; index += 1) {
+        var state = stateOf(kids[index]);
+        if (state && state.nodeType === 1 && (!test || test(state))) return kids[index];
+      }
+      return null;
+    };
+
+    var htmlTag = function (tag) { return function (state) { return isHTMLElement(state) && state.tag === tag; }; };
+
+    var rootElement = function (doc) { return childElement(doc); };
+    var headOf = function (doc) {
+      var root = rootElement(doc);
+      return root && htmlTag("html")(stateOf(root)) ? childElement(root, htmlTag("head")) : null;
+    };
+    var bodyOf = function (doc) {
+      var root = rootElement(doc);
+      return root && htmlTag("html")(stateOf(root)) ? childElement(root, function (state) { return isHTMLElement(state) && (state.tag === "body" || state.tag === "frameset"); }) : null;
+    };
+    var doctypeOf = function (doc) {
+      var kids = stateOf(doc).childNodes;
+      for (var index = 0; index < kids.length; index += 1) if (stateOf(kids[index]).nodeType === 10) return kids[index];
+      return null;
+    };
+
+    var stripAndCollapse = function (text) { return String(text).replace(/[\t\n\f\r ]+/g, " ").replace(/^ | $/g, ""); };
+
+    var titleElementOf = function (doc) {
+      var root = rootElement(doc);
+      if (!root) return null;
+      if (namespaceOf(stateOf(root)) === SVG_NS && stateOf(root).tag === "svg") return childElement(root, function (state) { return namespaceOf(state) === SVG_NS && state.tag === "title"; });
+      return firstUnder(doc, function (node, state) { return isHTMLElement(state) && state.tag === "title"; });
+    };
+
+    var titleOf = function (doc) {
+      var title = titleElementOf(doc);
+      return title ? stripAndCollapse(textOf(title)) : "";
+    };
+
+    // Live collections a document keeps (one object each, as Chrome's [SameObject] ones).
+    var docLists = new WeakMap();
+    var docList = function (doc, name, brand, test) {
+      var lists = docLists.get(doc);
+      if (!lists) {
+        lists = {};
+        docLists.set(doc, lists);
+      }
+      if (!lists[name]) lists[name] = makeCollection(brand, function () { return elementsUnder(doc, test); });
+      return lists[name];
+    };
+
+    var TREE_FIELDS = {
+      documentElement: function (doc) { return rootElement(doc); },
+      head: function (doc) { return headOf(doc); },
+      body: function (doc) { return bodyOf(doc); },
+      title: function (doc) { return titleOf(doc); },
+      children: function (doc) { return childrenOf(doc); },
+      childNodes: function (doc) { return childNodesOf(doc); },
+      firstChild: function (doc, state) { return state.firstChild || null; },
+      lastChild: function (doc, state) { return state.lastChild || null; },
+      firstElementChild: function (doc, state) { return state.firstElementChild || null; },
+      lastElementChild: function (doc, state) { return state.lastElementChild || null; },
+      childElementCount: function (doc, state) { return state.childElementCount || 0; },
+      all: function (doc) { return docList(doc, "all", "HTMLAllCollection", null); },
+      forms: function (doc) { return docList(doc, "forms", "HTMLCollection", function (node, state) { return isHTMLElement(state) && state.tag === "form"; }); },
+      images: function (doc) { return docList(doc, "images", "HTMLCollection", function (node, state) { return isHTMLElement(state) && state.tag === "img"; }); },
+      embeds: function (doc) { return docList(doc, "embeds", "HTMLCollection", function (node, state) { return isHTMLElement(state) && state.tag === "embed"; }); },
+      plugins: function (doc) { return docList(doc, "embeds", "HTMLCollection", function (node, state) { return isHTMLElement(state) && state.tag === "embed"; }); },
+      scripts: function (doc) { return docList(doc, "scripts", "HTMLCollection", function (node, state) { return isHTMLElement(state) && state.tag === "script"; }); },
+      links: function (doc) { return docList(doc, "links", "HTMLCollection", function (node, state) { return isHTMLElement(state) && (state.tag === "a" || state.tag === "area") && "href" in state.attrs; }); },
+      anchors: function (doc) { return docList(doc, "anchors", "HTMLCollection", function (node, state) { return isHTMLElement(state) && state.tag === "a" && "name" in state.attrs; }); },
+    };
+
+    // What a document no browsing context shows answers (Chrome's for a script-made document).
+    var INERT_FIELDS = {
+      readyState: function () { return "complete"; },
+      hidden: function () { return true; },
+      visibilityState: function () { return "hidden"; },
+      referrer: function () { return ""; },
+      URL: function (doc, state) { return state.URL; },
+      documentURI: function (doc, state) { return state.URL; },
+      baseURI: function (doc, state) { return state.URL; },
+      domain: function () { return documentValues.domain; },
+      characterSet: function () { return "UTF-8"; },
+      charset: function () { return "UTF-8"; },
+      contentType: function (doc, state) { return state.contentType; },
+      compatMode: function (doc, state) { return state.mode === "quirks" ? "BackCompat" : "CSS1Compat"; },
+      activeElement: function (doc) { return bodyOf(doc) || null; },
+      currentScript: function () { return null; },
+      defaultView: function () { return null; },
+      location: function () { return null; },
+      styleSheets: function () { return documentValues.styleSheets; },
+      nodeType: function () { return 9; },
+      nodeName: function () { return "#document"; },
+    };
+
+    documentField = function (doc, key) {
+      var state = stateOf(doc);
+      if (!state || state.nodeType !== 9) {
+        if (doc === document) return documentValues[key];
+        throw typeError("Illegal invocation");
+      }
+      if (TREE_FIELDS[key]) return TREE_FIELDS[key](doc, state);
+      if (state.main) return documentValues[key];
+      if (INERT_FIELDS[key]) return INERT_FIELDS[key](doc, state);
+      return documentValues[key];
+    };
+
+    patchGetter(docProto, "doctype", function () {
+      if (!isDocument(this)) throw typeError("Illegal invocation");
+      return doctypeOf(this);
+    });
+
+    (function installTitle() {
+      try {
+        Object.defineProperty(docProto, "title", {
+          get: asNative(function () { return documentField(this, "title"); }, "get title"),
+          set: asNative(function (value) {
+            var doc = isDocument(this) ? this : document;
+            var text = String(value);
+            var title = titleElementOf(doc);
+            if (!title) {
+              var head = headOf(doc);
+              if (!head) return;
+              title = makeElement("title", doc);
+              insertChild(head, title, null, "appendChild", false);
+            }
+            title.textContent = text;
+          }, "set title"),
+          enumerable: true,
+          configurable: true,
+        });
+      } catch (error) {}
+    })();
+
+    // document.cookie on a document with no browsing context reads empty and keeps nothing.
+    (function installInertCookie() {
+      var descriptor = Object.getOwnPropertyDescriptor(docProto, "cookie");
+      if (!descriptor || !descriptor.get) return;
+      try {
+        Object.defineProperty(docProto, "cookie", {
+          get: asNative(function () { var state = stateOf(this); return state && state.inert ? "" : descriptor.get.call(this); }, "get cookie"),
+          set: asNative(function (value) { var state = stateOf(this); if (!(state && state.inert)) descriptor.set.call(this, value); }, "set cookie"),
+          enumerable: descriptor.enumerable,
+          configurable: true,
+        });
+      } catch (error) {}
+    })();
+
+    // ---- Creating nodes in a document ----
+
+    var validName = function (name) { return VALID_NAME.test(String(name)); };
+    var QNAME = /^([^:]+:)?[^:]+$/;
+
+    var checkQualified = function (qualified, method, iface) {
+      var text = String(qualified);
+      if (!validName(text)) throw domException("Failed to execute '" + method + "' on '" + iface + "': The qualified name provided ('" + text + "') contains the invalid name-start character '" + text.charAt(0) + "'.", "InvalidCharacterError");
+      if (!QNAME.test(text)) throw domException("Failed to execute '" + method + "' on '" + iface + "': The qualified name provided ('" + text + "') contains multiple colons.", "InvalidCharacterError");
+    };
+
+    var checkNamespace = function (namespace, qualified, method, iface) {
+      var ns = namespace === null || namespace === undefined || namespace === "" ? null : String(namespace);
+      var text = String(qualified);
+      var colon = text.indexOf(":");
+      var prefix = colon === -1 ? null : text.slice(0, colon);
+      var bad = (prefix !== null && ns === null) || (prefix === "xml" && ns !== XML_NS) ||
+        ((prefix === "xmlns" || text === "xmlns") !== (ns === XMLNS_NS));
+      if (bad) throw domException("Failed to execute '" + method + "' on '" + iface + "': The namespace URI provided ('" + (ns || "") + "') is not valid for the qualified name provided ('" + text + "').", "NamespaceError");
+      return ns;
+    };
+
+    patch(docProto, "createElement", function createElement(tag) {
+      required(arguments, 1, "createElement", "Document");
+      var doc = documentOf(this);
+      var name = String(tag);
+      if (!validName(name)) {
+        throw domException("Failed to execute 'createElement' on 'Document': The tag name provided ('" + name + "') is not a valid name.", "InvalidCharacterError");
+      }
+      if (isHTMLDoc(doc)) return makeElement(name.toLowerCase(), doc);
+      return makeElementNS(stateOf(doc).contentType === "application/xhtml+xml" ? HTML_NS : null, name, doc);
+    });
+
+    patch(docProto, "createElementNS", function createElementNS(namespace, qualified) {
+      required(arguments, 2, "createElementNS", "Document");
+      checkQualified(qualified, "createElementNS", "Document");
+      var ns = checkNamespace(namespace, qualified, "createElementNS", "Document");
+      return makeElementNS(ns, String(qualified), documentOf(this));
+    });
+
+    patch(docProto, "createCDATASection", function createCDATASection(data) {
+      required(arguments, 1, "createCDATASection", "Document");
+      if (isHTMLDoc(documentOf(this))) throw domException("Failed to execute 'createCDATASection' on 'Document': This operation is not supported for HTML documents.", "NotSupportedError");
+      if (String(data).indexOf("]]>") !== -1) throw domException("Failed to execute 'createCDATASection' on 'Document': String cannot contain ']]>' since that is the end delimiter of a CData section.", "InvalidCharacterError");
+      var node = makeCharacterData("CDATASection", 4, "#cdata-section", data, documentOf(this));
+      return node;
+    });
+
+    patch(docProto, "createProcessingInstruction", function createProcessingInstruction(target, data) {
+      required(arguments, 2, "createProcessingInstruction", "Document");
+      if (!validName(target)) throw domException("Failed to execute 'createProcessingInstruction' on 'Document': The target provided ('" + String(target) + "') is not a valid name.", "InvalidCharacterError");
+      if (String(data).indexOf("?>") !== -1) throw domException("Failed to execute 'createProcessingInstruction' on 'Document': The data provided ('" + String(data) + "') contains '?>'.", "InvalidCharacterError");
+      var node = makeCharacterData("ProcessingInstruction", 7, String(target), data, documentOf(this));
+      stateOf(node).target = String(target);
+      return node;
+    });
+
+    if (globalThis.ProcessingInstruction && globalThis.ProcessingInstruction.prototype) {
+      patchGetter(globalThis.ProcessingInstruction.prototype, "target", function () { var state = stateOf(this); return state ? state.target : undefined; });
+    }
+
+    // ---- Finding elements ----
+
+    var byId = function (root, id) {
+      var wanted = String(id);
+      if (!wanted) return null;
+      return firstUnder(root, function (node, state) { return state.attrs.id === wanted; });
+    };
+
+    var classTest = function (names) {
+      var wanted = String(names).split(/[\t\n\f\r ]+/).filter(Boolean);
+      if (!wanted.length) return function () { return false; };
+      return function (node, state) {
+        var have = String(state.attrs["class"] || "").split(/[\t\n\f\r ]+/);
+        for (var index = 0; index < wanted.length; index += 1) if (have.indexOf(wanted[index]) === -1) return false;
+        return true;
+      };
+    };
+
+    var tagTest = function (root, name) {
+      var wanted = String(name);
+      if (wanted === "*") return function () { return true; };
+      var lower = wanted.toLowerCase();
+      var html = isHTMLDoc(ownerOf(root));
+      return function (node, state) {
+        if (html && namespaceOf(state) === HTML_NS) return state.tagName.toLowerCase() === lower;
+        return state.tagName === wanted;
+      };
+    };
+
+    var liveLists = new WeakMap();
+    var liveList = function (root, key, brand, test) {
+      var lists = liveLists.get(root);
+      if (!lists) {
+        lists = new Map();
+        liveLists.set(root, lists);
+      }
+      if (!lists.has(key)) lists.set(key, makeCollection(brand, function () { return elementsUnder(root, test); }));
+      return lists.get(key);
+    };
+
+    var finders = function (holder, iface, withId) {
+      if (!holder) return;
+      if (withId) {
+        patch(holder, "getElementById", function getElementById(id) {
+          required(arguments, 1, "getElementById", iface);
+          return byId(this, id);
+        });
+      }
+      patch(holder, "getElementsByTagName", function getElementsByTagName(name) {
+        required(arguments, 1, "getElementsByTagName", iface);
+        return liveList(this, "tag:" + String(name), "HTMLCollection", tagTest(this, name));
+      });
+      patch(holder, "getElementsByClassName", function getElementsByClassName(names) {
+        required(arguments, 1, "getElementsByClassName", iface);
+        return liveList(this, "class:" + String(names), "HTMLCollection", classTest(names));
+      });
+    };
+
+    finders(docProto, "Document", true);
+    finders(globalThis.Element && globalThis.Element.prototype, "Element", false);
+    if (globalThis.DocumentFragment && globalThis.DocumentFragment.prototype) {
+      patch(globalThis.DocumentFragment.prototype, "getElementById", function getElementById(id) {
+        required(arguments, 1, "getElementById", "DocumentFragment");
+        return byId(this, id);
+      });
+    }
+    patch(docProto, "getElementsByName", function getElementsByName(name) {
+      required(arguments, 1, "getElementsByName", "Document");
+      var wanted = String(name);
+      return liveList(this, "name:" + wanted, "NodeList", function (node, state) { return isHTMLElement(state) && state.attrs.name === wanted; });
+    });
+
+    // ---- Selectors (css-select over the nodes' state) ----
+
+    var selectorAdapter = {
+      isTag: function (node) { var state = stateOf(node); return Boolean(state && state.nodeType === 1); },
+      getChildren: function (node) { var state = stateOf(node); return state && state.childNodes ? state.childNodes : []; },
+      getParent: function (node) { var state = stateOf(node); return state ? state.parentNode || null : null; },
+      getSiblings: function (node) { var parent = selectorAdapter.getParent(node); return parent ? stateOf(parent).childNodes : [node]; },
+      getName: function (node) {
+        var state = stateOf(node);
+        return isHTMLDoc(ownerOf(node)) ? String(state.localName || state.tag).toLowerCase() : String(state.localName || state.tag);
+      },
+      getAttributeValue: function (node, name) {
+        var state = stateOf(node);
+        var key = attributeKey(state, node, name);
+        return Object.prototype.hasOwnProperty.call(state.attrs, key) ? state.attrs[key] : undefined;
+      },
+      hasAttrib: function (node, name) {
+        var state = stateOf(node);
+        return Object.prototype.hasOwnProperty.call(state.attrs, attributeKey(state, node, name));
+      },
+      getText: function (node) { return textOf(node); },
+      prevElementSibling: function (node) {
+        var state = stateOf(node);
+        for (var at = state.previousSibling; at; at = stateOf(at).previousSibling) if (stateOf(at).nodeType === 1) return at;
+        return null;
+      },
+      removeSubsets: function (nodes) {
+        return nodes.filter(function (node, index) {
+          if (nodes.indexOf(node) !== index) return false;
+          for (var up = selectorAdapter.getParent(node); up; up = selectorAdapter.getParent(up)) if (nodes.indexOf(up) !== -1) return false;
+          return true;
+        });
+      },
+      existsOne: function (test, nodes) {
+        for (var index = 0; index < nodes.length; index += 1) {
+          var node = nodes[index];
+          if (selectorAdapter.isTag(node) && (test(node) || selectorAdapter.existsOne(test, selectorAdapter.getChildren(node)))) return true;
+        }
+        return false;
+      },
+      findAll: function (test, nodes) {
+        var found = [];
+        var stack = nodes.slice().reverse();
+        while (stack.length) {
+          var node = stack.pop();
+          if (!selectorAdapter.isTag(node)) continue;
+          if (test(node)) found.push(node);
+          var kids = stateOf(node).childNodes;
+          for (var index = kids.length - 1; index >= 0; index -= 1) stack.push(kids[index]);
+        }
+        return found;
+      },
+      findOne: function (test, nodes) {
+        var stack = nodes.slice().reverse();
+        while (stack.length) {
+          var node = stack.pop();
+          if (!selectorAdapter.isTag(node)) continue;
+          if (test(node)) return node;
+          var kids = stateOf(node).childNodes;
+          for (var index = kids.length - 1; index >= 0; index -= 1) stack.push(kids[index]);
+        }
+        return null;
+      },
+      equals: function (left, right) { return left === right; },
+      isHovered: function () { return false; },
+      isVisited: function () { return false; },
+      isActive: function () { return false; },
+    };
+
+    var formControl = function (state) { return isHTMLElement(state) && (state.tag === "input" || state.tag === "textarea" || state.tag === "select"); };
+    var TEXT_INPUTS = { text: 1, search: 1, url: 1, tel: 1, email: 1, password: 1, date: 1, month: 1, week: 1, time: 1, "datetime-local": 1, number: 1 };
+    var inputType = function (state) { return String(state.attrs.type || "text").toLowerCase(); };
+    var mutable = function (state) {
+      if (!isHTMLElement(state)) return false;
+      if (state.tag === "textarea") return !("readonly" in state.attrs) && !("disabled" in state.attrs);
+      if (state.tag === "input") return Boolean(TEXT_INPUTS[inputType(state)]) && !("readonly" in state.attrs) && !("disabled" in state.attrs);
+      return false;
+    };
+
+    // Pseudo-classes Chrome has and css-select lacks (or answers differently for a page nobody
+    // interacts with).
+    var never = function () { return false; };
+    var extraPseudos = {
+      defined: function (node) { var state = stateOf(node); return !(isHTMLElement(state) && state.tag.indexOf("-") !== -1); },
+      "read-only": function (node) { return !mutable(stateOf(node)); },
+      "read-write": function (node) { return mutable(stateOf(node)); },
+      required: function (node) { var state = stateOf(node); return formControl(state) && "required" in state.attrs; },
+      optional: function (node) { var state = stateOf(node); return formControl(state) && !("required" in state.attrs); },
+      "placeholder-shown": function (node) { var state = stateOf(node); return formControl(state) && state.tag !== "select" && "placeholder" in state.attrs && !String(state.value || state.attrs.value || ""); },
+      focus: never, "focus-visible": never, "focus-within": never, hover: never, active: never, visited: never, target: never,
+      fullscreen: never, modal: never, autofill: never, "-webkit-autofill": never, "popover-open": never, open: never,
+      playing: never, paused: function (node) { var state = stateOf(node); return isHTMLElement(state) && (state.tag === "video" || state.tag === "audio"); },
+      "picture-in-picture": never, "user-invalid": never, "user-valid": never, indeterminate: never, default: never,
+      valid: function (node) { return formControl(stateOf(node)) || stateOf(node).tag === "form"; }, invalid: never,
+      "in-range": never, "out-of-range": never,
+    };
+
+    // css-select prefers its own alias of a name (read-only, required, ...) to a function given for
+    // it, so each of these is given as an alias of a private name that only the function answers.
+    var selectorPseudos = {};
+    Object.keys(extraPseudos).forEach(function (name) {
+      selectorPseudos[name] = ":x-wre-" + name;
+      selectorPseudos["x-wre-" + name] = extraPseudos[name];
+    });
+
+    // The pseudo-classes and -elements Chrome knows: anything else makes the selector invalid.
+    var CHROME_PSEUDO_CLASSES = ("active any-link autofill checked default defined dir disabled empty enabled first-child " +
+      "first-of-type focus focus-visible focus-within fullscreen has hover in-range indeterminate invalid is lang last-child " +
+      "last-of-type link modal not nth-child nth-last-child nth-last-of-type nth-of-type only-child only-of-type open optional " +
+      "out-of-range paused picture-in-picture placeholder-shown playing popover-open read-only read-write required root " +
+      "scope state target user-invalid user-valid valid visited where -webkit-any -webkit-autofill").split(" ");
+    var CHROME_PSEUDO_ELEMENTS = ("after backdrop before cue file-selector-button first-letter first-line grammar-error " +
+      "highlight marker part placeholder selection slotted spelling-error target-text view-transition details-content " +
+      "picker scroll-marker scroll-button column -webkit-scrollbar -webkit-input-placeholder").split(" ");
+
+    // CSS closes what EOF leaves open ("[a=b" is "[a=b]").
+    var closeAtEnd = function (text) {
+      var closers = [];
+      var quote = null;
+      for (var index = 0; index < text.length; index += 1) {
+        var ch = text.charAt(index);
+        if (ch === "\\") { index += 1; continue; }
+        if (quote) { if (ch === quote) quote = null; continue; }
+        if (ch === "\"" || ch === "'") quote = ch;
+        else if (ch === "[") closers.push("]");
+        else if (ch === "(") closers.push(")");
+        else if ((ch === "]" || ch === ")") && closers.length && closers[closers.length - 1] === ch) closers.pop();
+      }
+      return text + (quote || "") + closers.reverse().join("");
+    };
+
+    // A CSS identifier (what a type selector names), escapes and non-ASCII included.
+    var IDENT = /^-?(?:[_a-zA-Z\u0080-\uFFFF]|\\[\s\S])(?:[_a-zA-Z0-9\u0080-\uFFFF-]|\\[\s\S])*$|^--(?:[_a-zA-Z0-9\u0080-\uFFFF-]|\\[\s\S])*$/;
+    var TRAVERSALS = { child: 1, descendant: 1, sibling: 1, adjacent: 1, parent: 1, "column-combinator": 1 };
+
+    var invalidSelector = function (text, method, iface) {
+      return domException("Failed to execute '" + method + "' on '" + iface + "': '" + text + "' is not a valid selector.", "SyntaxError");
+    };
+
+    // Compiles `text` for matching against `context`'s tree, or says the selector can never match
+    // (a valid one with a pseudo-element); throws Chrome's SyntaxError for an invalid one.
+    var compileSelector = function (text, context, method, iface) {
+      var selector = String(text);
+      if (!selector.trim()) {
+        if (!selector) throw domException("Failed to execute '" + method + "' on '" + iface + "': The provided selector is empty.", "SyntaxError");
+        throw invalidSelector(selector, method, iface);
+      }
+      var engine = env.selectorEngine();
+      var source = closeAtEnd(selector);
+      var parsed;
+      try {
+        parsed = engine.parse(source);
+      } catch (error) {
+        throw invalidSelector(selector, method, iface);
+      }
+      var never = false;
+      var walk = function (tokens) {
+        for (var index = 0; index < tokens.length; index += 1) {
+          var token = tokens[index];
+          if (token.type === "pseudo-element") {
+            if (CHROME_PSEUDO_ELEMENTS.indexOf(String(token.name).toLowerCase()) === -1) throw invalidSelector(selector, method, iface);
+            never = true;
+          } else if (token.type === "pseudo") {
+            if (CHROME_PSEUDO_CLASSES.indexOf(String(token.name).toLowerCase()) === -1) throw invalidSelector(selector, method, iface);
+            if (Array.isArray(token.data)) token.data.forEach(walk);
+          } else if (token.type === "tag" && !(token.name === "*" || IDENT.test(token.name))) {
+            throw invalidSelector(selector, method, iface);
+          } else if (token.type === "tag" && token.namespace !== undefined && token.namespace !== null && token.namespace !== "*") {
+            throw invalidSelector(selector, method, iface);
+          } else if (token.type === "attribute" && token.namespace !== undefined && token.namespace !== null && token.namespace !== "*") {
+            throw invalidSelector(selector, method, iface);
+          }
+        }
+      };
+      parsed.forEach(walk);
+      if (never) return null;
+      var dropNamespaces = function (tokens) {
+        tokens.forEach(function (token) {
+          if (token.namespace === "*") delete token.namespace;
+          if (token.type === "pseudo" && Array.isArray(token.data)) token.data.forEach(dropNamespaces);
+        });
+      };
+      parsed.forEach(dropNamespaces);
+      if (parsed.some(function (tokens) { return tokens.length && TRAVERSALS[tokens[0].type]; })) throw invalidSelector(selector, method, iface);
+      var doc = ownerOf(context);
+      var html = isHTMLDoc(doc);
+      try {
+        return engine.compile(parsed, {
+          adapter: selectorAdapter, xmlMode: !html, lowerCaseTags: html, lowerCaseAttributeNames: html, cacheResults: false,
+          quirksMode: stateOf(doc).mode === "quirks", pseudos: selectorPseudos, context: context, relativeSelector: false,
+        });
+      } catch (error) {
+        throw invalidSelector(selector, method, iface);
+      }
+    };
+
+    var querySelectorAll = function (root, text, method, iface) {
+      var test = compileSelector(text, root, method, iface);
+      if (!test) return [];
+      return selectorAdapter.findAll(test, selectorAdapter.getChildren(root));
+    };
+
+    var querySelector = function (root, text, method, iface) {
+      var test = compileSelector(text, root, method, iface);
+      if (!test) return null;
+      return selectorAdapter.findOne(test, selectorAdapter.getChildren(root));
+    };
+
+    var selectorMethods = function (holder, iface) {
+      if (!holder) return;
+      patch(holder, "querySelector", function querySelector_(selectors) {
+        required(arguments, 1, "querySelector", iface);
+        return querySelector(this, selectors, "querySelector", iface);
+      });
+      patch(holder, "querySelectorAll", function querySelectorAll_(selectors) {
+        required(arguments, 1, "querySelectorAll", iface);
+        return listOf(querySelectorAll(this, selectors, "querySelectorAll", iface), "NodeList");
+      });
+    };
+
+    selectorMethods(docProto, "Document");
+    selectorMethods(globalThis.Element && globalThis.Element.prototype, "Element");
+    selectorMethods(globalThis.DocumentFragment && globalThis.DocumentFragment.prototype, "DocumentFragment");
+
+    var matchesSelector = function (element, text, method) {
+      var test = compileSelector(text, element, method, "Element");
+      return Boolean(test) && test(element);
+    };
+
+    if (globalThis.Element && globalThis.Element.prototype) {
+      var elementProto = globalThis.Element.prototype;
+      patch(elementProto, "matches", function matches(selectors) {
+        required(arguments, 1, "matches", "Element");
+        return matchesSelector(this, selectors, "matches");
+      });
+      patch(elementProto, "webkitMatchesSelector", function webkitMatchesSelector(selectors) {
+        required(arguments, 1, "webkitMatchesSelector", "Element");
+        return matchesSelector(this, selectors, "webkitMatchesSelector");
+      });
+      patch(elementProto, "closest", function closest(selectors) {
+        required(arguments, 1, "closest", "Element");
+        var test = compileSelector(selectors, this, "closest", "Element");
+        if (!test) return null;
+        for (var at = this; at && selectorAdapter.isTag(at); at = selectorAdapter.getParent(at)) if (test(at)) return at;
+        return null;
+      });
+    }
+
+    env.querySelectorAll = function (root, text) { return querySelectorAll(root, text, "querySelectorAll", "Element"); };
+
+    // ---- Attributes ----
+
+    // The key an attribute name reads under: lower-cased for an HTML element in an HTML document
+    // (as getAttribute and setAttribute fold it), as given otherwise.
+    attributeKey = function (state, node, name) {
+      var text = String(name);
+      return isHTMLElement(state) && isHTMLDoc(ownerOf(node)) ? text.toLowerCase() : text;
+    };
+
+    var attrNamespace = function (state, key) {
+      var held = state.attrNS && state.attrNS[key];
+      return held || { namespaceURI: null, prefix: null, localName: key };
+    };
+
+    var setAttributeNS = function (node, namespace, qualified, value) {
+      var state = stateOf(node);
+      var name = String(qualified);
+      var colon = name.indexOf(":");
+      var prefix = colon === -1 ? null : name.slice(0, colon);
+      var local = colon === -1 ? name : name.slice(colon + 1);
+      if (!state.attrNS) state.attrNS = {};
+      if (namespace) state.attrNS[name] = { namespaceURI: namespace, prefix: prefix, localName: local };
+      else delete state.attrNS[name];
+      setAttr(node, name, value);
+    };
+
+    var attrState = new WeakMap();
+
+    var attrFor = function (element, key) {
+      var state = stateOf(element);
+      if (!state.attrObjects) state.attrObjects = {};
+      var attr = state.attrObjects[key];
+      if (!attr) {
+        attr = Object.create((globalThis.Attr && globalThis.Attr.prototype) || Object.prototype);
+        attrState.set(attr, { element: element, name: key });
+        elementState.set(attr, {
+          nodeType: 2, nodeName: key, parentNode: null, parentElement: null, ownerDocument: ownerOf(element),
+          previousSibling: null, nextSibling: null, childNodes: [], attrs: {}, tag: "#attr", attr: true,
+        });
+        state.attrObjects[key] = attr;
+      }
+      return attr;
+    };
+
+    var attrsOf = function (element) {
+      var state = stateOf(element);
+      return Object.keys(state.attrs).map(function (key) { return attrFor(element, key); });
+    };
+
+    if (globalThis.Attr && globalThis.Attr.prototype) {
+      var attrProto = globalThis.Attr.prototype;
+      var attrField = function (attr) {
+        var held = attrState.get(attr);
+        if (!held) throw typeError("Illegal invocation");
+        var owner = held.element && Object.prototype.hasOwnProperty.call(stateOf(held.element).attrs, held.name) ? held.element : null;
+        var info = owner ? attrNamespace(stateOf(owner), held.name) : held.info || { namespaceURI: null, prefix: null, localName: held.name };
+        return { owner: owner, held: held, info: info, value: owner ? stateOf(owner).attrs[held.name] : held.value || "" };
+      };
+      patchGetter(attrProto, "name", function () { return attrField(this).held.name; });
+      patchGetter(attrProto, "localName", function () { return attrField(this).info.localName; });
+      patchGetter(attrProto, "namespaceURI", function () { return attrField(this).info.namespaceURI; });
+      patchGetter(attrProto, "prefix", function () { return attrField(this).info.prefix; });
+      patchGetter(attrProto, "ownerElement", function () { return attrField(this).owner; });
+      patchGetter(attrProto, "specified", function () { attrField(this); return true; });
+      try {
+        Object.defineProperty(attrProto, "value", {
+          get: asNative(function () { return attrField(this).value; }, "get value"),
+          set: asNative(function (value) {
+            var field = attrField(this);
+            if (field.owner) setAttr(field.owner, field.held.name, String(value));
+            else field.held.value = String(value);
+          }, "set value"),
+          enumerable: true,
+          configurable: true,
+        });
+      } catch (error) {}
+    }
+
+    var attributeViews = new WeakMap();
+    var attributesView = function (element) {
+      var view = attributeViews.get(element);
+      if (!view) {
+        view = makeCollection("NamedNodeMap", function () { return attrsOf(element); }, {
+          keys: function () { return Object.keys(stateOf(element).attrs); },
+          find: function (list, key) { return Object.prototype.hasOwnProperty.call(stateOf(element).attrs, key) ? attrFor(element, key) : null; },
+        });
+        attributeViews.set(element, view);
+        listOwners.set(view, element);
+      }
+      return view;
+    };
+
+    var listOwners = new WeakMap();
+
+    if (globalThis.NamedNodeMap && globalThis.NamedNodeMap.prototype) {
+      var mapProto = globalThis.NamedNodeMap.prototype;
+      var ownerFor = function (view) {
+        var element = listOwners.get(view);
+        if (!element) throw typeError("Illegal invocation");
+        return element;
+      };
+      patchGetter(mapProto, "length", function () { return Object.keys(stateOf(ownerFor(this)).attrs).length; });
+      patch(mapProto, "item", function item(index) {
+        required(arguments, 1, "item", "NamedNodeMap");
+        var element = ownerFor(this);
+        var key = Object.keys(stateOf(element).attrs)[Number(index) >>> 0];
+        return key === undefined ? null : attrFor(element, key);
+      });
+      patch(mapProto, "getNamedItem", function getNamedItem(name) {
+        required(arguments, 1, "getNamedItem", "NamedNodeMap");
+        var element = ownerFor(this);
+        var key = attributeKey(stateOf(element), element, name);
+        return Object.prototype.hasOwnProperty.call(stateOf(element).attrs, key) ? attrFor(element, key) : null;
+      });
+      patch(mapProto, "getNamedItemNS", function getNamedItemNS(namespace, local) {
+        required(arguments, 2, "getNamedItemNS", "NamedNodeMap");
+        var element = ownerFor(this);
+        var key = findNS(stateOf(element), namespace, local);
+        return key === null ? null : attrFor(element, key);
+      });
+      patch(mapProto, "removeNamedItem", function removeNamedItem(name) {
+        required(arguments, 1, "removeNamedItem", "NamedNodeMap");
+        var element = ownerFor(this);
+        var key = attributeKey(stateOf(element), element, name);
+        if (!Object.prototype.hasOwnProperty.call(stateOf(element).attrs, key)) {
+          throw domException("Failed to execute 'removeNamedItem' on 'NamedNodeMap': No item with name '" + String(name) + "' was found.", "NotFoundError");
+        }
+        var attr = attrFor(element, key);
+        var held = attrState.get(attr);
+        held.value = stateOf(element).attrs[key];
+        held.info = attrNamespace(stateOf(element), key);
+        setAttr(element, key, null);
+        return attr;
+      });
+      Object.defineProperty(mapProto, Symbol.iterator, { value: Array.prototype.values, writable: true, enumerable: false, configurable: true });
+    }
+
+    var findNS = function (state, namespace, local) {
+      var ns = namespace === null || namespace === undefined || namespace === "" ? null : String(namespace);
+      var keys = Object.keys(state.attrs);
+      for (var index = 0; index < keys.length; index += 1) {
+        var info = attrNamespace(state, keys[index]);
+        if (info.namespaceURI === ns && info.localName === String(local)) return keys[index];
+      }
+      return null;
+    };
+
+    var VALID_ATTRIBUTE = /^[^\t\n\f\r />"'=\0]+$/;
+
+    if (globalThis.Element && globalThis.Element.prototype) {
+      var elementAttrs = globalThis.Element.prototype;
+      patchGetter(elementAttrs, "attributes", function () {
+        if (!selectorAdapter.isTag(this)) throw typeError("Illegal invocation");
+        return attributesView(this);
+      });
+      patchGetter(elementAttrs, "namespaceURI", function () { var state = stateOf(this); return state ? namespaceOf(state) : null; });
+      patchGetter(elementAttrs, "prefix", function () { var state = stateOf(this); return state ? state.prefix || null : null; });
+      patchGetter(elementAttrs, "localName", function () { var state = stateOf(this); return state ? state.localName || state.tag : undefined; });
+      patch(elementAttrs, "setAttribute", function setAttribute(name, value) {
+        required(arguments, 2, "setAttribute", "Element");
+        if (!VALID_ATTRIBUTE.test(String(name))) throw domException("Failed to execute 'setAttribute' on 'Element': '" + String(name) + "' is not a valid attribute name.", "InvalidCharacterError");
+        setAttr(this, attributeKey(stateOf(this), this, name), String(value));
+      });
+      patch(elementAttrs, "getAttribute", function getAttribute(name) {
+        required(arguments, 1, "getAttribute", "Element");
+        var state = stateOf(this);
+        if (!state) return null;
+        var key = attributeKey(state, this, name);
+        return Object.prototype.hasOwnProperty.call(state.attrs, key) ? state.attrs[key] : null;
+      });
+      patch(elementAttrs, "hasAttribute", function hasAttribute(name) {
+        required(arguments, 1, "hasAttribute", "Element");
+        var state = stateOf(this);
+        return Boolean(state) && Object.prototype.hasOwnProperty.call(state.attrs, attributeKey(state, this, name));
+      });
+      patch(elementAttrs, "removeAttribute", function removeAttribute(name) {
+        required(arguments, 1, "removeAttribute", "Element");
+        setAttr(this, attributeKey(stateOf(this), this, name), null);
+      });
+      patch(elementAttrs, "toggleAttribute", function toggleAttribute(name, force) {
+        required(arguments, 1, "toggleAttribute", "Element");
+        if (!VALID_ATTRIBUTE.test(String(name))) throw domException("Failed to execute 'toggleAttribute' on 'Element': '" + String(name) + "' is not a valid attribute name.", "InvalidCharacterError");
+        var state = stateOf(this);
+        var key = attributeKey(state, this, name);
+        var has = Object.prototype.hasOwnProperty.call(state.attrs, key);
+        if (has && (force === undefined || !force)) { setAttr(this, key, null); return false; }
+        if (!has && (force === undefined || force)) { setAttr(this, key, ""); return true; }
+        return has;
+      });
+      patch(elementAttrs, "getAttributeNames", function getAttributeNames() { return Object.keys(stateOf(this).attrs); });
+      patch(elementAttrs, "hasAttributes", function hasAttributes() { return Object.keys(stateOf(this).attrs).length > 0; });
+      patch(elementAttrs, "getAttributeNode", function getAttributeNode(name) {
+        required(arguments, 1, "getAttributeNode", "Element");
+        var state = stateOf(this);
+        var key = attributeKey(state, this, name);
+        return Object.prototype.hasOwnProperty.call(state.attrs, key) ? attrFor(this, key) : null;
+      });
+      patch(elementAttrs, "setAttributeNS", function setAttributeNS_(namespace, qualified, value) {
+        required(arguments, 3, "setAttributeNS", "Element");
+        checkQualified(qualified, "setAttributeNS", "Element");
+        var ns = checkNamespace(namespace, qualified, "setAttributeNS", "Element");
+        var state = stateOf(this);
+        var colon = String(qualified).indexOf(":");
+        var existing = findNS(state, ns, colon === -1 ? String(qualified) : String(qualified).slice(colon + 1));
+        if (existing !== null && existing !== String(qualified)) setAttr(this, existing, null);
+        setAttributeNS(this, ns, qualified, String(value));
+      });
+      patch(elementAttrs, "getAttributeNS", function getAttributeNS(namespace, local) {
+        required(arguments, 2, "getAttributeNS", "Element");
+        var state = stateOf(this);
+        var key = findNS(state, namespace, local);
+        return key === null ? null : state.attrs[key];
+      });
+      patch(elementAttrs, "hasAttributeNS", function hasAttributeNS(namespace, local) {
+        required(arguments, 2, "hasAttributeNS", "Element");
+        return findNS(stateOf(this), namespace, local) !== null;
+      });
+      patch(elementAttrs, "removeAttributeNS", function removeAttributeNS(namespace, local) {
+        required(arguments, 2, "removeAttributeNS", "Element");
+        var key = findNS(stateOf(this), namespace, local);
+        if (key !== null) setAttr(this, key, null);
+      });
+    }
+
+    // ---- Markup: parse5 in, parse5 out ----
+
+    var parser = function () { return env.htmlEngine(); };
+
+    // Builds the sandbox's nodes for parse5's children of `source` under `parent`, owned by `owner`.
+    // Scripts the parser makes never run (innerHTML, DOMParser and fragments don't run them).
+    // A "<?target data?>" the tokenizer took for a bogus comment: Chrome makes it a processing
+    // instruction (unless its target is xml), its data without the closing "?".
+    var instructionFrom = function (comment, markup, owner) {
+      var at = comment.sourceCodeLocation ? comment.sourceCodeLocation.startOffset : -1;
+      if (at < 0 || markup.slice(at, at + 2) !== "<?") return null;
+      var match = /^\?([^\t\n\f\r ?>]+)[\t\n\f\r ]*([\s\S]*?)\??$/.exec(comment.data);
+      if (!match || match[1].toLowerCase() === "xml") return null;
+      var node = makeCharacterData("ProcessingInstruction", 7, match[1], match[2], owner);
+      stateOf(node).target = match[1];
+      return node;
+    };
+
+    var build = function (source, parent, owner, markup) {
+      var kids = source.childNodes || [];
+      for (var index = 0; index < kids.length; index += 1) {
+        var kid = kids[index];
+        var made;
+        if (kid.nodeName === "#text") made = makeCharacterData("Text", 3, "#text", kid.value, owner);
+        else if (kid.nodeName === "#comment") made = instructionFrom(kid, markup, owner) || makeCharacterData("Comment", 8, "#comment", kid.data, owner);
+        else if (kid.nodeName === "#documentType") made = makeDoctype(kid.name, kid.publicId, kid.systemId, owner);
+        else {
+          made = kid.namespaceURI === HTML_NS ? makeElement(kid.tagName, owner) : makeElementNS(kid.namespaceURI, kid.tagName, owner);
+          var attrs = kid.attrs || [];
+          for (var at = 0; at < attrs.length; at += 1) {
+            var attr = attrs[at];
+            var qualified = attr.prefix ? attr.prefix + ":" + attr.name : attr.name;
+            if (attr.namespace) setAttributeNS(made, attr.namespace, qualified, attr.value);
+            else setAttr(made, qualified, attr.value);
+          }
+          if (kid.namespaceURI === HTML_NS && kid.tagName === "script") stateOf(made).started = true;
+          if (kid.namespaceURI === HTML_NS && kid.tagName === "template" && kid.content) build(kid.content, templateContent(made), templateOwner(owner), markup);
+          else build(kid, made, owner, markup);
+        }
+        appendQuietly(parent, made);
+      }
+    };
+
+    var scriptingOf = function (doc) { var state = stateOf(doc); return Boolean(state && state.scripting); };
+
+    // The nodes `markup` parses to in `context` (an element), owned by the context's document.
+    var parseFragment = function (markup, context) {
+      var state = stateOf(context);
+      var owner = ownerOf(context);
+      var engine = parser();
+      var tag = state.nodeType === 1 ? state.localName || state.tag : "body";
+      var namespace = state.nodeType === 1 ? namespaceOf(state) : HTML_NS;
+      var text = String(markup);
+      var parsed = engine.parseFragment(engine.defaultTreeAdapter.createElement(tag, namespace, []), text, { scriptingEnabled: scriptingOf(owner), sourceCodeLocationInfo: true });
+      var holder = makeFragment(owner);
+      build(parsed, holder, owner, text);
+      return stateOf(holder).childNodes.slice();
+    };
+
+    env.parseFragment = parseFragment;
+
+    env.parseHtml = function (source, host) {
+      var nodes = parseFragment(source, host && stateOf(host) && stateOf(host).nodeType === 1 ? host : document.body || document.documentElement);
+      for (var index = 0; index < nodes.length; index += 1) appendQuietly(host, nodes[index]);
+      return host;
+    };
+
+    var parseDocument = function (markup, fields) {
+      var engine = parser();
+      var text = String(markup);
+      var parsed = engine.parse(text, { scriptingEnabled: false, sourceCodeLocationInfo: true });
+      var doc = makeDocument("HTMLDocument", { isHTML: true, contentType: "text/html", URL: fields.URL, mode: parsed.mode });
+      build(parsed, doc, doc, text);
+      return doc;
+    };
+
+    env.parseDocument = parseDocument;
+
+    var serialAdapter = {
+      getChildNodes: function (node) { return stateOf(node).childNodes; },
+      getParentNode: function (node) { return stateOf(node).parentNode; },
+      isElementNode: function (node) { return stateOf(node).nodeType === 1; },
+      isTextNode: function (node) { var type = stateOf(node).nodeType; return type === 3 || type === 4; },
+      isCommentNode: function (node) { var type = stateOf(node).nodeType; return type === 8 || type === 7; },
+      isDocumentTypeNode: function (node) { return stateOf(node).nodeType === 10; },
+      getTagName: function (node) {
+        var state = stateOf(node);
+        var ns = namespaceOf(state);
+        return ns === HTML_NS || ns === SVG_NS || ns === MATHML_NS ? state.localName || state.tag : state.tagName;
+      },
+      getNamespaceURI: function (node) { return namespaceOf(stateOf(node)); },
+      getAttrList: function (node) {
+        var state = stateOf(node);
+        return Object.keys(state.attrs).map(function (key) {
+          var info = attrNamespace(state, key);
+          return { name: info.namespaceURI ? info.localName : key, value: state.attrs[key], namespace: info.namespaceURI || undefined, prefix: info.prefix || undefined };
+        });
+      },
+      getTextNodeContent: function (node) { return stateOf(node).data; },
+      getCommentNodeContent: function (node) {
+        var state = stateOf(node);
+        return state.nodeType === 7 ? PI_MARK + state.target + " " + state.data + PI_MARK : state.data;
+      },
+      getDocumentTypeNodeName: function (node) { return stateOf(node).name; },
+      getTemplateContent: function (node) { return templateContent(node); },
+    };
+
+    // A processing instruction serializes as Chrome writes one in HTML ("<?target data?>"); parse5
+    // knows none, so it goes through as a comment with marks around it, rewritten after.
+    var PI_MARK = "\uFDD0\uFDD1";
+    var PI_SERIALIZED = new RegExp("<!--" + PI_MARK + "([\\s\\S]*?)" + PI_MARK + "-->", "g");
+    var withInstructions = function (html) { return html.indexOf(PI_MARK) === -1 ? html : html.replace(PI_SERIALIZED, "<?$1?>"); };
+
+    var serializeInner = function (node) {
+      return withInstructions(parser().serialize(node, { treeAdapter: serialAdapter, scriptingEnabled: scriptingOf(ownerOf(node)) }));
+    };
+    var serializeOuter = function (node) {
+      var state = stateOf(node);
+      if (state.nodeType === 7) return "<?" + state.target + " " + state.data + "?>";
+      return withInstructions(parser().serializeOuter(node, { treeAdapter: serialAdapter, scriptingEnabled: scriptingOf(ownerOf(node)) }));
+    };
+
+    env.serializeChildren = function (node) { return serializeInner(node); };
+    env.serializeNode = function (node) { return serializeOuter(node); };
+    serializeChildren = env.serializeChildren;
+    serializeNode = env.serializeNode;
+
+    var markupProto = globalThis.Element && globalThis.Element.prototype;
+    if (markupProto) {
+      try {
+        Object.defineProperty(markupProto, "innerHTML", {
+          get: asNative(function () {
+            var state = stateOf(this);
+            if (!state) return "";
+            return serializeInner(this);
+          }, "get innerHTML"),
+          set: asNative(function (value) {
+            var state = stateOf(this);
+            if (!state) return;
+            var markup = value === null ? "" : String(value);
+            var target = isHTMLElement(state) && state.tag === "template" ? templateContent(this) : this;
+            replaceAll(target, parseFragment(markup, this));
+            state.html = "";
+            state.layoutSource = markup;
+            env.textChanged(this);
+          }, "set innerHTML"),
+          enumerable: true,
+          configurable: true,
+        });
+        Object.defineProperty(markupProto, "outerHTML", {
+          get: asNative(function () {
+            var state = stateOf(this);
+            return state ? serializeOuter(this) : "";
+          }, "get outerHTML"),
+          set: asNative(function (value) {
+            var state = stateOf(this);
+            if (!state || !state.parentNode) return;
+            var parent = state.parentNode;
+            var parentState = stateOf(parent);
+            if (parentState.nodeType === 9) {
+              throw domException("Failed to set the 'outerHTML' property on 'Element': This element's parent is a Document, which may not be modified.", "NoModificationAllowedError");
+            }
+            var context = parentState.nodeType === 11 ? makeElement("body", ownerOf(this)) : parent;
+            var nodes = parseFragment(value === null ? "" : String(value), context);
+            for (var index = 0; index < nodes.length; index += 1) insertChild(parent, nodes[index], this, "outerHTML", false);
+            takeChild(parent, this, false);
+          }, "set outerHTML"),
+          enumerable: true,
+          configurable: true,
+        });
+      } catch (error) {}
+
+      var POSITIONS = { beforebegin: 1, afterbegin: 1, beforeend: 1, afterend: 1 };
+      var positionOf = function (where, method) {
+        var position = String(where).toLowerCase();
+        if (!POSITIONS[position]) {
+          throw domException("Failed to execute '" + method + "' on 'Element': The value provided ('" + String(where) + "') is not one of 'beforeBegin', 'afterBegin', 'beforeEnd', or 'afterEnd'.", "SyntaxError");
+        }
+        return position;
+      };
+
+      // Puts `node` at `position` relative to `element`; false when there is no parent to put it in.
+      var insertAdjacent = function (element, position, node, method) {
+        var state = stateOf(element);
+        if (position === "beforebegin" || position === "afterend") {
+          var parent = state.parentNode;
+          if (!parent || stateOf(parent).nodeType === 9) return false;
+          insertChild(parent, node, position === "beforebegin" ? element : state.nextSibling, method, false, undefined, "Element");
+          return true;
+        }
+        insertChild(element, node, position === "afterbegin" ? state.firstChild : null, method, false, undefined, "Element");
+        return true;
+      };
+
+      patch(markupProto, "insertAdjacentHTML", function insertAdjacentHTML(where, markup) {
+        required(arguments, 2, "insertAdjacentHTML", "Element");
+        var position = positionOf(where, "insertAdjacentHTML");
+        var state = stateOf(this);
+        var context = position === "beforebegin" || position === "afterend" ? state.parentNode : this;
+        if (!context || stateOf(context).nodeType === 9) {
+          throw domException("Failed to execute 'insertAdjacentHTML' on 'Element': The element has no parent.", "NoModificationAllowedError");
+        }
+        if (stateOf(context).nodeType !== 1) context = makeElement("body", ownerOf(this));
+        var holder = makeFragment(ownerOf(this));
+        var nodes = parseFragment(String(markup), context);
+        for (var index = 0; index < nodes.length; index += 1) appendQuietly(holder, nodes[index]);
+        insertAdjacent(this, position, holder, "insertAdjacentHTML");
+      });
+      patch(markupProto, "insertAdjacentElement", function insertAdjacentElement(where, element) {
+        required(arguments, 2, "insertAdjacentElement", "Element");
+        var position = positionOf(where, "insertAdjacentElement");
+        if (!selectorAdapter.isTag(element)) throw typeError("Failed to execute 'insertAdjacentElement' on 'Element': parameter 2 is not of type 'Element'.");
+        return insertAdjacent(this, position, element, "insertAdjacentElement") ? element : null;
+      });
+      patch(markupProto, "insertAdjacentText", function insertAdjacentText(where, data) {
+        required(arguments, 2, "insertAdjacentText", "Element");
+        var position = positionOf(where, "insertAdjacentText");
+        insertAdjacent(this, position, makeCharacterData("Text", 3, "#text", String(data), ownerOf(this)), "insertAdjacentText");
+      });
+    }
+
+    // ---- Documents scripts make ----
+
+    var implementations = new WeakMap();
+    var implementationOwner = new WeakMap();
+    var mainImplementation = null;
+    try {
+      mainImplementation = document.implementation;
+    } catch (error) {}
+
+    var implementationOf = function (doc) {
+      if (doc === document && mainImplementation) {
+        implementationOwner.set(mainImplementation, document);
+        return mainImplementation;
+      }
+      var found = implementations.get(doc);
+      if (!found) {
+        found = Object.create((globalThis.DOMImplementation && globalThis.DOMImplementation.prototype) || Object.prototype);
+        implementations.set(doc, found);
+        implementationOwner.set(found, doc);
+      }
+      return found;
+    };
+
+    patchGetter(docProto, "implementation", function () {
+      if (!isDocument(this)) throw typeError("Illegal invocation");
+      return implementationOf(this);
+    });
+
+    var newHTMLDocument = function (title) {
+      var doc = makeDocument("HTMLDocument", { isHTML: true, contentType: "text/html" });
+      appendQuietly(doc, makeDoctype("html", "", "", doc));
+      var root = appendQuietly(doc, makeElement("html", doc));
+      var head = appendQuietly(root, makeElement("head", doc));
+      if (title !== undefined) appendQuietly(appendQuietly(head, makeElement("title", doc)), makeCharacterData("Text", 3, "#text", String(title), doc));
+      appendQuietly(root, makeElement("body", doc));
+      return doc;
+    };
+
+    var xmlContentType = function (namespace) {
+      return namespace === HTML_NS ? "application/xhtml+xml" : namespace === SVG_NS ? "image/svg+xml" : "application/xml";
+    };
+
+    if (globalThis.DOMImplementation && globalThis.DOMImplementation.prototype) {
+      var implProto = globalThis.DOMImplementation.prototype;
+      var ownerDoc = function (impl) {
+        var doc = implementationOwner.get(impl) || (impl === mainImplementation ? document : null);
+        if (!doc) throw typeError("Illegal invocation");
+        return doc;
+      };
+      patch(implProto, "createHTMLDocument", function createHTMLDocument(title) {
+        ownerDoc(this);
+        return newHTMLDocument(arguments.length ? title : undefined);
+      });
+      patch(implProto, "createDocument", function createDocument(namespace, qualified, doctype) {
+        required(arguments, 2, "createDocument", "DOMImplementation");
+        ownerDoc(this);
+        var ns = namespace === null || namespace === undefined || namespace === "" ? null : String(namespace);
+        var name = qualified === null || qualified === undefined ? "" : String(qualified);
+        var element = null;
+        if (name) {
+          checkQualified(name, "createDocument", "DOMImplementation");
+          checkNamespace(ns, name, "createDocument", "DOMImplementation");
+        }
+        var doc = makeDocument("XMLDocument", { isHTML: false, contentType: xmlContentType(ns) });
+        if (doctype !== null && doctype !== undefined) {
+          if (!stateOf(doctype) || stateOf(doctype).nodeType !== 10) throw typeError("Failed to execute 'createDocument' on 'DOMImplementation': parameter 3 is not of type 'DocumentType'.");
+          adopt(doctype, doc);
+          appendQuietly(doc, doctype);
+        }
+        if (name) element = appendQuietly(doc, makeElementNS(ns, name, doc));
+        return doc;
+      });
+      patch(implProto, "createDocumentType", function createDocumentType(name, publicId, systemId) {
+        required(arguments, 3, "createDocumentType", "DOMImplementation");
+        var text = String(name);
+        if (!validName(text)) throw domException("Failed to execute 'createDocumentType' on 'DOMImplementation': The qualified name provided ('" + text + "') contains the invalid name-start character '" + text.charAt(0) + "'.", "InvalidCharacterError");
+        return makeDoctype(text, publicId, systemId, ownerDoc(this));
+      });
+      patch(implProto, "hasFeature", function hasFeature() { return true; });
+    }
+
+    var documentShell = installShell("Document", function () {
+      return makeDocument("Document", { isHTML: false, contentType: "application/xml" });
+    }, 0);
+    if (globalThis.HTMLDocument) installShell("HTMLDocument", function () {}, 0, { illegal: true });
+    if (globalThis.XMLDocument) installShell("XMLDocument", function () {}, 0, { illegal: true });
+    if (documentShell) {
+      patch(documentShell, "parseHTMLUnsafe", function parseHTMLUnsafe(markup) {
+        required(arguments, 1, "parseHTMLUnsafe", "Document");
+        return parseDocument(markup, { URL: "about:blank" });
+      });
+    }
+
+    // ---- DOMParser and XML ----
+
+    var XML_TYPES = { "text/xml": 1, "application/xml": 1, "application/xhtml+xml": 1, "image/svg+xml": 1 };
+
+    var parserError = function (doc, message) {
+      var error = makeElementNS(HTML_NS, "parsererror", doc);
+      setAttr(error, "style", "display: block; white-space: pre; border: 2px solid #c77; padding: 0 1em 0 1em; margin: 1em; background-color: #fdd; color: black");
+      var heading = appendQuietly(error, makeElementNS(HTML_NS, "h3", doc));
+      appendQuietly(heading, makeCharacterData("Text", 3, "#text", "This page contains the following errors:", doc));
+      var detail = appendQuietly(error, makeElementNS(HTML_NS, "div", doc));
+      setAttr(detail, "style", "font-family:monospace;font-size:12px");
+      appendQuietly(detail, makeCharacterData("Text", 3, "#text", message + "\n", doc));
+      var after = appendQuietly(error, makeElementNS(HTML_NS, "h3", doc));
+      appendQuietly(after, makeCharacterData("Text", 3, "#text", "Below is a rendering of the page up to the first error.", doc));
+      return error;
+    };
+
+    // An XML document from `markup` (saxes, namespace-aware), or on the first error the part that
+    // parsed with Chrome's <parsererror> in front, as libxml's error page reads.
+    var parseXml = function (markup, type) {
+      var doc = makeDocument("XMLDocument", { isHTML: false, contentType: type });
+      var Saxes = env.xmlEngine().SaxesParser;
+      var sax = new Saxes({ xmlns: true, position: true });
+      var stack = [doc];
+      var failed = null;
+      var top = function () { return stack[stack.length - 1]; };
+      sax.on("doctype", function (text) {
+        var match = /^\s*([^\s\[>]+)(?:\s+PUBLIC\s+(["'])(.*?)\2\s+(["'])(.*?)\4|\s+SYSTEM\s+(["'])(.*?)\6)?/.exec(text);
+        if (match) appendQuietly(doc, makeDoctype(match[1], match[3] || "", match[5] || match[7] || "", doc));
+      });
+      sax.on("opentag", function (tag) {
+        var name = tag.prefix ? tag.prefix + ":" + tag.local : tag.local;
+        var element = makeElementNS(tag.uri || null, name, doc);
+        Object.keys(tag.attributes).forEach(function (key) {
+          var attr = tag.attributes[key];
+          if (attr.uri) setAttributeNS(element, attr.uri, attr.name, attr.value);
+          else setAttr(element, attr.name, attr.value);
+        });
+        appendQuietly(top(), element);
+        stack.push(element);
+      });
+      sax.on("closetag", function () { stack.pop(); });
+      sax.on("text", function (text) { if (stack.length > 1) appendQuietly(top(), makeCharacterData("Text", 3, "#text", text, doc)); });
+      sax.on("cdata", function (text) { appendQuietly(top(), makeCharacterData("CDATASection", 4, "#cdata-section", text, doc)); });
+      sax.on("comment", function (text) { appendQuietly(top(), makeCharacterData("Comment", 8, "#comment", text, doc)); });
+      sax.on("processinginstruction", function (pi) {
+        if (pi.target === "xml" && stack.length === 1 && !stateOf(doc).childNodes.length) return;
+        var node = makeCharacterData("ProcessingInstruction", 7, pi.target, pi.body, doc);
+        stateOf(node).target = pi.target;
+        appendQuietly(top(), node);
+      });
+      sax.on("error", function (error) {
+        if (!failed) failed = error;
+        throw error;
+      });
+      try {
+        sax.write(String(markup)).close();
+      } catch (error) {
+        if (!failed) failed = error;
+      }
+      if (failed) {
+        var match = /^(?:[^:]*:)?(\d+):(\d+): (.*)$/.exec(String(failed.message));
+        var message = match ? "error on line " + match[1] + " at column " + match[2] + ": " + match[3] : String(failed.message);
+        var root = rootElement(doc);
+        var report = parserError(doc, message);
+        if (root) insertChild(root, report, stateOf(root).firstChild, "appendChild", true);
+        else appendQuietly(doc, report);
+      }
+      return doc;
+    };
+
+    if (globalThis.DOMParser && globalThis.DOMParser.prototype) {
+      installShell("DOMParser", function () { return Object.create(globalThis.DOMParser.prototype); }, 0);
+      patch(globalThis.DOMParser.prototype, "parseFromString", function parseFromString(markup, type) {
+        required(arguments, 2, "parseFromString", "DOMParser");
+        var kind = String(type);
+        if (kind === "text/html") return parseDocument(markup, { URL: documentValues.URL });
+        if (XML_TYPES[kind]) return parseXml(markup, kind);
+        throw typeError("Failed to execute 'parseFromString' on 'DOMParser': The provided value '" + kind + "' is not a valid enum value of type SupportedType.");
+      });
+    }
+
+    // XMLSerializer: XML serialization of a node (namespace declarations where an element's
+    // namespace differs from its parent's, empty elements self-closed, text escaped for XML).
+    var escapeXml = function (text, attribute) {
+      var out = String(text).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+      return attribute ? out.replace(/"/g, "&quot;").replace(/\t/g, "&#9;").replace(/\n/g, "&#10;").replace(/\r/g, "&#13;") : out;
+    };
+
+    var serializeXml = function (node, inherited) {
+      var state = stateOf(node);
+      switch (state.nodeType) {
+        case 3: return escapeXml(state.data, false);
+        case 4: return "<![CDATA[" + state.data + "]]>";
+        case 8: return "<!--" + state.data + "-->";
+        case 7: return "<?" + state.target + " " + state.data + "?>";
+        case 10: {
+          var out = "<!DOCTYPE " + state.name;
+          if (state.publicId) out += " PUBLIC \"" + state.publicId + "\"";
+          else if (state.systemId) out += " SYSTEM";
+          if (state.systemId) out += " \"" + state.systemId + "\"";
+          return out + ">";
+        }
+        case 9:
+        case 11: return state.childNodes.map(function (kid) { return serializeXml(kid, inherited); }).join("");
+        default: {
+          var ns = namespaceOf(state);
+          var name = state.prefix ? state.prefix + ":" + (state.localName || state.tag) : state.localName || state.tag;
+          var text = "<" + name;
+          if (ns !== inherited) text += state.prefix ? " xmlns:" + state.prefix + "=\"" + escapeXml(ns || "", true) + "\"" : " xmlns=\"" + escapeXml(ns || "", true) + "\"";
+          Object.keys(state.attrs).forEach(function (key) {
+            if (key === "xmlns" || key.indexOf("xmlns:") === 0) return;
+            text += " " + key + "=\"" + escapeXml(state.attrs[key], true) + "\"";
+          });
+          var kids = isHTMLElement(state) && state.tag === "template" ? stateOf(templateContent(node)).childNodes : state.childNodes;
+          if (!kids.length) return text + (ns === HTML_NS ? (VOID_TAGS[state.tag] ? " />" : "></" + name + ">") : "/>");
+          return text + ">" + kids.map(function (kid) { return serializeXml(kid, ns); }).join("") + "</" + name + ">";
+        }
+      }
+    };
+
+    if (globalThis.XMLSerializer && globalThis.XMLSerializer.prototype) {
+      installShell("XMLSerializer", function () { return Object.create(globalThis.XMLSerializer.prototype); }, 0);
+      patch(globalThis.XMLSerializer.prototype, "serializeToString", function serializeToString(node) {
+        required(arguments, 1, "serializeToString", "XMLSerializer");
+        if (!stateOf(node)) throw typeError("Failed to execute 'serializeToString' on 'XMLSerializer': parameter 1 is not of type 'Node'.");
+        var parent = stateOf(node).parentNode;
+        return serializeXml(node, parent && stateOf(parent).nodeType === 1 ? namespaceOf(stateOf(parent)) : null);
+      });
+    }
+
+    // ---- Cloning, importing, adopting ----
+
+    var cloneInto = function (node, owner, deep) {
+      var state = stateOf(node);
+      var copy;
+      switch (state.nodeType) {
+        case 1:
+          copy = namespaceOf(state) === HTML_NS && isHTMLDoc(owner) ? makeElement(state.localName || state.tag, owner) : makeElementNS(namespaceOf(state), state.prefix ? state.prefix + ":" + (state.localName || state.tag) : state.localName || state.tag, owner);
+          Object.keys(state.attrs).forEach(function (key) {
+            var info = attrNamespace(state, key);
+            if (info.namespaceURI) setAttributeNS(copy, info.namespaceURI, key, state.attrs[key]);
+            else setAttr(copy, key, state.attrs[key]);
+          });
+          var copied = stateOf(copy);
+          if (isHTMLElement(state) && state.tag === "input") {
+            ["value", "checked", "dirtyValue", "dirtyChecked"].forEach(function (field) { if (field in state) copied[field] = state[field]; });
+          }
+          if (state.started) copied.started = true;
+          if (deep && isHTMLElement(state) && state.tag === "template") {
+            var source = stateOf(templateContent(node)).childNodes;
+            var into = templateContent(copy);
+            for (var t = 0; t < source.length; t += 1) appendQuietly(into, cloneInto(source[t], templateOwner(owner), true));
+          }
+          break;
+        case 3: copy = makeCharacterData("Text", 3, "#text", state.data, owner); break;
+        case 4: copy = makeCharacterData("CDATASection", 4, "#cdata-section", state.data, owner); break;
+        case 7: copy = makeCharacterData("ProcessingInstruction", 7, state.target, state.data, owner); stateOf(copy).target = state.target; break;
+        case 8: copy = makeCharacterData("Comment", 8, "#comment", state.data, owner); break;
+        case 10: copy = makeDoctype(state.name, state.publicId, state.systemId, owner); break;
+        case 11: copy = makeFragment(owner); break;
+        case 9:
+          copy = makeDocument(Object.prototype.toString.call(node).slice(8, -1), { isHTML: state.isHTML, contentType: state.contentType, URL: state.URL, mode: state.mode });
+          owner = copy;
+          break;
+        default:
+          throw domException("Failed to execute 'cloneNode' on 'Node': The node provided cannot be cloned.", "NotSupportedError");
+      }
+      if (deep && state.nodeType !== 9 || deep && state.nodeType === 9) {
+        var kids = state.childNodes || [];
+        for (var index = 0; index < kids.length; index += 1) appendQuietly(copy, cloneInto(kids[index], owner, true));
+      }
+      return copy;
+    };
+
+    env.cloneNode = function (node, deep) { return cloneInto(node, ownerOf(node), deep); };
+
+    if (nodePrototype) {
+      patch(nodePrototype, "cloneNode", function cloneNode(deep) {
+        var state = stateOf(this);
+        if (!state) throw typeError("Illegal invocation");
+        if (state.attr) throw domException("Failed to execute 'cloneNode' on 'Node': Attr nodes cannot be cloned.", "NotSupportedError");
+        return cloneInto(this, state.nodeType === 9 ? this : ownerOf(this), Boolean(deep));
+      });
+    }
+
+    patch(docProto, "importNode", function importNode(node, deep) {
+      required(arguments, 1, "importNode", "Document");
+      var state = stateOf(node);
+      if (!state) throw typeError("Failed to execute 'importNode' on 'Document': parameter 1 is not of type 'Node'.");
+      if (state.nodeType === 9) throw domException("Failed to execute 'importNode' on 'Document': The node provided is a document, which may not be imported.", "NotSupportedError");
+      return cloneInto(node, documentOf(this), Boolean(deep));
+    });
+
+    patch(docProto, "adoptNode", function adoptNode(node) {
+      required(arguments, 1, "adoptNode", "Document");
+      var state = stateOf(node);
+      if (!state) throw typeError("Failed to execute 'adoptNode' on 'Document': parameter 1 is not of type 'Node'.");
+      if (state.nodeType === 9) throw domException("Failed to execute 'adoptNode' on 'Document': The node provided is of type '#document', which may not be adopted.", "NotSupportedError");
+      if (state.parentNode) takeChild(state.parentNode, node, false);
+      adopt(node, documentOf(this));
+      return node;
+    });
+
+    // ---- Comparing and normalising ----
+
+    var equalNodes = function (left, right) {
+      var a = stateOf(left);
+      var b = stateOf(right);
+      if (!a || !b || a.nodeType !== b.nodeType) return false;
+      switch (a.nodeType) {
+        case 1: {
+          if (namespaceOf(a) !== namespaceOf(b) || (a.prefix || null) !== (b.prefix || null) || (a.localName || a.tag) !== (b.localName || b.tag)) return false;
+          var keys = Object.keys(a.attrs);
+          if (keys.length !== Object.keys(b.attrs).length) return false;
+          for (var index = 0; index < keys.length; index += 1) if (b.attrs[keys[index]] !== a.attrs[keys[index]]) return false;
+          break;
+        }
+        case 10: if (a.name !== b.name || a.publicId !== b.publicId || a.systemId !== b.systemId) return false; break;
+        case 7: if (a.target !== b.target || a.data !== b.data) return false; break;
+        case 3: case 4: case 8: if (a.data !== b.data) return false; break;
+        default: break;
+      }
+      var kidsA = a.childNodes || [];
+      var kidsB = b.childNodes || [];
+      if (kidsA.length !== kidsB.length) return false;
+      for (var at = 0; at < kidsA.length; at += 1) if (!equalNodes(kidsA[at], kidsB[at])) return false;
+      return true;
+    };
+
+    var ancestorsOf = function (node) {
+      var chain = [node];
+      for (var up = stateOf(node).parentNode; up; up = stateOf(up).parentNode) chain.unshift(up);
+      return chain;
+    };
+
+    var disconnectedOrder = new WeakMap();
+    var orderCount = 0;
+    var orderOf = function (node) {
+      if (!disconnectedOrder.has(node)) disconnectedOrder.set(node, (orderCount += 1));
+      return disconnectedOrder.get(node);
+    };
+
+    var comparePosition = function (self, other) {
+      if (self === other) return 0;
+      var mine = ancestorsOf(self);
+      var theirs = ancestorsOf(other);
+      if (mine[0] !== theirs[0]) {
+        return 1 | 32 | (orderOf(mine[0]) < orderOf(theirs[0]) ? 4 : 2);
+      }
+      if (theirs.indexOf(self) !== -1) return 16 | 4;
+      if (mine.indexOf(other) !== -1) return 8 | 2;
+      var depth = 0;
+      while (mine[depth] === theirs[depth]) depth += 1;
+      var siblings = stateOf(mine[depth - 1]).childNodes;
+      return siblings.indexOf(mine[depth]) < siblings.indexOf(theirs[depth]) ? 4 : 2;
+    };
+
+    var normalizeNode = function (node) {
+      var kids = stateOf(node).childNodes.slice();
+      for (var index = 0; index < kids.length; index += 1) {
+        var kid = kids[index];
+        var state = stateOf(kid);
+        if (state.nodeType === 3) {
+          if (!state.data) {
+            takeChild(node, kid, false);
+            continue;
+          }
+          var text = state.data;
+          var next = state.nextSibling;
+          while (next && stateOf(next).nodeType === 3) {
+            text += stateOf(next).data;
+            var gone = next;
+            next = stateOf(next).nextSibling;
+            takeChild(node, gone, false);
+          }
+          if (text !== state.data) kid.data = text;
+        } else if (state.childNodes && state.childNodes.length) {
+          normalizeNode(kid);
+        }
+      }
+    };
+
+    if (nodePrototype) {
+      patch(nodePrototype, "isEqualNode", function isEqualNode(other) {
+        required(arguments, 1, "isEqualNode", "Node");
+        return other !== null && other !== undefined && equalNodes(this, other);
+      });
+      patch(nodePrototype, "isSameNode", function isSameNode(other) {
+        required(arguments, 1, "isSameNode", "Node");
+        return this === other;
+      });
+      patch(nodePrototype, "compareDocumentPosition", function compareDocumentPosition(other) {
+        required(arguments, 1, "compareDocumentPosition", "Node");
+        if (!stateOf(other)) throw typeError("Failed to execute 'compareDocumentPosition' on 'Node': parameter 1 is not of type 'Node'.");
+        return comparePosition(this, other);
+      });
+      patch(nodePrototype, "normalize", function normalize() { normalizeNode(this); });
+      patchGetter(nodePrototype, "isConnected", function () {
+        var root = ancestorsOf(this)[0];
+        while (stateOf(root).shadow) root = ancestorsOf(stateOf(root).host)[0];
+        return stateOf(root).nodeType === 9;
+      });
+    }
+
+    // ---- Character data ----
+
+    var dataOf = function (node, method) {
+      var state = stateOf(node);
+      if (!state || (state.nodeType !== 3 && state.nodeType !== 4 && state.nodeType !== 7 && state.nodeType !== 8)) throw typeError("Illegal invocation");
+      return state;
+    };
+
+    var indexError = function (method, offset, length) {
+      return domException("Failed to execute '" + method + "' on 'CharacterData': The offset " + offset + " is greater than the node's length (" + length + ").", "IndexSizeError");
+    };
+
+    var characterData = globalThis.CharacterData && globalThis.CharacterData.prototype;
+    if (characterData) {
+      var replaceData = function (node, method, offset, count, text) {
+        var state = dataOf(node, method);
+        var at = Number(offset) >>> 0;
+        if (at > state.data.length) throw indexError(method, at, state.data.length);
+        var end = Math.min(state.data.length, at + (Number(count) >>> 0));
+        node.data = state.data.slice(0, at) + text + state.data.slice(end);
+      };
+      patch(characterData, "appendData", function appendData(text) { required(arguments, 1, "appendData", "CharacterData"); var state = dataOf(this); this.data = state.data + String(text); });
+      patch(characterData, "insertData", function insertData(offset, text) { required(arguments, 2, "insertData", "CharacterData"); replaceData(this, "insertData", offset, 0, String(text)); });
+      patch(characterData, "deleteData", function deleteData(offset, count) { required(arguments, 2, "deleteData", "CharacterData"); replaceData(this, "deleteData", offset, count, ""); });
+      patch(characterData, "replaceData", function replaceData_(offset, count, text) { required(arguments, 3, "replaceData", "CharacterData"); replaceData(this, "replaceData", offset, count, String(text)); });
+      patch(characterData, "substringData", function substringData(offset, count) {
+        required(arguments, 2, "substringData", "CharacterData");
+        var state = dataOf(this);
+        var at = Number(offset) >>> 0;
+        if (at > state.data.length) throw indexError("substringData", at, state.data.length);
+        return state.data.substr(at, Number(count) >>> 0);
+      });
+    }
+
+    var textProto = globalThis.Text && globalThis.Text.prototype;
+    if (textProto) {
+      patch(textProto, "splitText", function splitText(offset) {
+        required(arguments, 1, "splitText", "Text");
+        var state = dataOf(this);
+        var at = Number(offset) >>> 0;
+        if (at > state.data.length) throw domException("Failed to execute 'splitText' on 'Text': The offset " + at + " is larger than the Text node's length.", "IndexSizeError");
+        var rest = makeCharacterData("Text", 3, "#text", state.data.slice(at), ownerOf(this));
+        if (state.parentNode) insertChild(state.parentNode, rest, state.nextSibling, "splitText", false);
+        this.data = state.data.slice(0, at);
+        return rest;
+      });
+      patchGetter(textProto, "wholeText", function () {
+        var state = dataOf(this);
+        var text = state.data;
+        for (var back = state.previousSibling; back && stateOf(back).nodeType === 3; back = stateOf(back).previousSibling) text = stateOf(back).data + text;
+        for (var ahead = state.nextSibling; ahead && stateOf(ahead).nodeType === 3; ahead = stateOf(ahead).nextSibling) text += stateOf(ahead).data;
+        return text;
+      });
+    }
+
+    // ---- Ranges, as far as fragments need them ----
+
+    if (globalThis.Range && globalThis.Range.prototype) {
+      var rangeStart = new WeakMap();
+      var makeRange = function (doc) {
+        var range = Object.create(globalThis.Range.prototype);
+        rangeStart.set(range, { container: doc, offset: 0 });
+        return range;
+      };
+      installShell("Range", function () { return makeRange(document); }, 0);
+      patch(docProto, "createRange", function createRange() { return makeRange(documentOf(this)); });
+      patch(globalThis.Range.prototype, "createContextualFragment", function createContextualFragment(markup) {
+        required(arguments, 1, "createContextualFragment", "Range");
+        var start = rangeStart.get(this);
+        if (!start) throw typeError("Illegal invocation");
+        var container = start.container;
+        var state = stateOf(container);
+        var context = state.nodeType === 1 ? container : state.nodeType === 9 ? bodyOf(container) || rootElement(container) : state.parentNode;
+        if (!context || stateOf(context).nodeType !== 1 || (isHTMLElement(stateOf(context)) && stateOf(context).tag === "html" && isHTMLDoc(ownerOf(context)))) {
+          context = makeElement("body", ownerOf(container));
+        }
+        var fragment = makeFragment(ownerOf(container));
+        var nodes = parseFragment(String(markup), context);
+        for (var index = 0; index < nodes.length; index += 1) appendQuietly(fragment, nodes[index]);
+        return fragment;
+      });
+      patchGetter(globalThis.Range.prototype, "startContainer", function () { var start = rangeStart.get(this); return start ? start.container : null; });
+      patchGetter(globalThis.Range.prototype, "startOffset", function () { var start = rangeStart.get(this); return start ? start.offset : 0; });
+      patchGetter(globalThis.Range.prototype, "collapsed", function () { return true; });
+    }
+
+    var fragmentProto = globalThis.DocumentFragment && globalThis.DocumentFragment.prototype;
+    if (fragmentProto) {
+      patchGetter(fragmentProto, "children", function () { return childrenOf(this); });
+      ["childElementCount", "firstElementChild", "lastElementChild"].forEach(function (field) {
+        patchGetter(fragmentProto, field, function () {
+          var state = stateOf(this);
+          if (!state) throw typeError("Illegal invocation");
+          return state[field] === undefined ? (field === "childElementCount" ? 0 : null) : state[field];
+        });
+      });
+    }
+
+    var allProto = globalThis.HTMLAllCollection && globalThis.HTMLAllCollection.prototype;
+    if (allProto) {
+      patchGetter(allProto, "length", function () { return Number(listLength(this)); });
+      patch(allProto, "item", function item(name) {
+        var items = listContents(this);
+        if (name === undefined) return null;
+        var index = Number(name);
+        if (String(index >>> 0) === String(name)) return items[index] || null;
+        return namedItem(items, String(name));
+      });
+      patch(allProto, "namedItem", function namedItem_(name) {
+        required(arguments, 1, "namedItem", "HTMLAllCollection");
+        return namedItem(listContents(this), String(name));
+      });
+      Object.defineProperty(allProto, Symbol.iterator, { value: Array.prototype.values, writable: true, enumerable: false, configurable: true });
+    }
+
+
+    // ---- Shadow roots ----
+
+    // Elements a shadow root may be attached to (and any valid custom element name).
+    var SHADOW_HOSTS = { article: 1, aside: 1, blockquote: 1, body: 1, div: 1, footer: 1, h1: 1, h2: 1, h3: 1, h4: 1, h5: 1, h6: 1, header: 1, main: 1, nav: 1, p: 1, section: 1, span: 1 };
+    var CUSTOM_NAME = /^[a-z][.0-9_a-z·À-ÖØ-öø-ͽͿ-῿‌-‍‿-⁀⁰-↏Ⰰ-⿯、-퟿豈-﷏ﷰ-�-]*-[.0-9_a-z·À-ÖØ-öø-ͽͿ-῿‌-‍‿-⁀⁰-↏Ⰰ-⿯、-퟿豈-﷏ﷰ-�-]*$/;
+    var RESERVED_NAMES = { "annotation-xml": 1, "color-profile": 1, "font-face": 1, "font-face-src": 1, "font-face-uri": 1, "font-face-format": 1, "font-face-name": 1, "missing-glyph": 1 };
+
+    var shadowProto = globalThis.ShadowRoot && globalThis.ShadowRoot.prototype;
+    if (shadowProto && globalThis.Element) {
+      var attachWhere = "Failed to execute 'attachShadow' on 'Element': ";
+      patch(globalThis.Element.prototype, "attachShadow", function attachShadow(init) {
+        required(arguments, 1, "attachShadow", "Element");
+        var host = stateOf(this);
+        if (init === null || (typeof init !== "object" && typeof init !== "function")) throw typeError(attachWhere + "The provided value is not of type 'ShadowRootInit'.");
+        var mode = init.mode;
+        if (mode === undefined) throw typeError(attachWhere + "Failed to read the 'mode' property from 'ShadowRootInit': Required member is undefined.");
+        mode = String(mode);
+        if (mode !== "open" && mode !== "closed") throw typeError(attachWhere + "Failed to read the 'mode' property from 'ShadowRootInit': The provided value '" + mode + "' is not a valid enum value of type ShadowRootMode.");
+        var name = host.localName || host.tag;
+        if (!isHTMLElement(host) || !(SHADOW_HOSTS[name] || (CUSTOM_NAME.test(name) && !RESERVED_NAMES[name]))) {
+          throw domException(attachWhere + "This element does not support attachShadow", "NotSupportedError");
+        }
+        if (host.shadowRoot) throw domException(attachWhere + "Shadow root cannot be created on a host which already hosts a shadow tree.", "NotSupportedError");
+        var root = Object.create(shadowProto);
+        elementState.set(root, {
+          tag: "#shadow-root", handle: "shadow", attrs: {}, nodeType: 11, nodeName: "#document-fragment", childNodes: [], children: [],
+          childElementCount: 0, firstElementChild: null, lastElementChild: null, firstChild: null, lastChild: null,
+          previousSibling: null, nextSibling: null, parentNode: null, parentElement: null, ownerDocument: ownerOf(this),
+          shadow: true, host: this, mode: mode, delegatesFocus: Boolean(init.delegatesFocus), clonable: Boolean(init.clonable),
+          serializable: Boolean(init.serializable), slotAssignment: init.slotAssignment === "manual" ? "manual" : "named",
+        });
+        host.shadowRoot = root;
+        return root;
+      });
+      patchGetter(globalThis.Element.prototype, "shadowRoot", function () {
+        var state = stateOf(this);
+        if (!state) throw typeError("Illegal invocation");
+        return state.shadowRoot && stateOf(state.shadowRoot).mode === "open" ? state.shadowRoot : null;
+      });
+      ["mode", "host", "delegatesFocus", "clonable", "serializable", "slotAssignment"].forEach(function (field) {
+        patchGetter(shadowProto, field, function () {
+          var state = stateOf(this);
+          if (!state || !state.shadow) throw typeError("Illegal invocation");
+          return state[field];
+        });
+      });
+      ["activeElement", "fullscreenElement", "pointerLockElement", "pictureInPictureElement"].forEach(function (field) {
+        if (Object.getOwnPropertyDescriptor(shadowProto, field)) {
+          patchGetter(shadowProto, field, function () { if (!stateOf(this)) throw typeError("Illegal invocation"); return null; });
+        }
+      });
+      var adopted = new WeakMap();
+      try {
+        var adoptedDescriptor = Object.getOwnPropertyDescriptor(shadowProto, "adoptedStyleSheets");
+        if (adoptedDescriptor) {
+          Object.defineProperty(shadowProto, "adoptedStyleSheets", {
+            get: asNative(function () { if (!stateOf(this)) throw typeError("Illegal invocation"); if (!adopted.has(this)) adopted.set(this, []); return adopted.get(this); }, "get adoptedStyleSheets"),
+            set: asNative(function (value) { if (!stateOf(this)) throw typeError("Illegal invocation"); adopted.set(this, Array.from(value)); }, "set adoptedStyleSheets"),
+            enumerable: true, configurable: true,
+          });
+        }
+      } catch (error) {}
+      try {
+        Object.defineProperty(shadowProto, "innerHTML", {
+          get: asNative(function () { if (!stateOf(this)) throw typeError("Illegal invocation"); return serializeInner(this); }, "get innerHTML"),
+          set: asNative(function (value) {
+            var state = stateOf(this);
+            if (!state) throw typeError("Illegal invocation");
+            replaceAll(this, parseFragment(value === null ? "" : String(value), state.host));
+          }, "set innerHTML"),
+          enumerable: true, configurable: true,
+        });
+      } catch (error) {}
+      if (globalThis.Node) {
+        patch(globalThis.Node.prototype, "getRootNode", function getRootNode(options) {
+          var composed = Boolean(options && typeof options === "object" && options.composed);
+          var at = this;
+          for (;;) {
+            var state = stateOf(at);
+            if (!state) throw typeError("Illegal invocation");
+            if (state.parentNode) { at = state.parentNode; continue; }
+            if (composed && state.shadow) { at = state.host; continue; }
+            return at;
+          }
+        });
+      }
+    }
+
+    // ---- Style sheet lists ----
+    //
+    // A document's or shadow root's styleSheets: a live StyleSheetList of the sheets its <style>
+    // and <link rel=stylesheet> elements carry (the element module gives loaded ones a `sheet`).
+    var sheetLists = new WeakMap();
+    var styleSheetsOf = function (root) {
+      var list = sheetLists.get(root);
+      if (!list) {
+        list = makeCollection("StyleSheetList", function () {
+          return elementsUnder(root, function (node, state) {
+            return isHTMLElement(state) && (state.tag === "style" || (state.tag === "link" && /(^|\s)stylesheet(\s|$)/i.test(state.attrs.rel || "")));
+          }).map(function (node) { try { return node.sheet; } catch (error) { return null; } }).filter(Boolean);
+        });
+        sheetLists.set(root, list);
+      }
+      return list;
+    };
+
+    var sheetListProto = globalThis.StyleSheetList && globalThis.StyleSheetList.prototype;
+    if (sheetListProto) {
+      patchGetter(sheetListProto, "length", function () { return listLength(this); });
+      patch(sheetListProto, "item", function item(index) {
+        required(arguments, 1, "item", "StyleSheetList");
+        return listContents(this)[Number(index) >>> 0] || null;
+      });
+      Object.defineProperty(sheetListProto, Symbol.iterator, { value: Array.prototype.values, writable: true, enumerable: false, configurable: true });
+    }
+
+    TREE_FIELDS.styleSheets = function (doc) { return styleSheetsOf(doc); };
+    if (shadowProto) {
+      patchGetter(shadowProto, "styleSheets", function () {
+        if (!stateOf(this) || !stateOf(this).shadow) throw typeError("Illegal invocation");
+        return styleSheetsOf(this);
+      });
+    }
+
+    // ---- Brand checks ----
+    //
+    // Chrome's node members refuse a receiver that is not one of its nodes (an object made from a
+    // node prototype, the prototype itself) with "Illegal invocation" before anything else, as the
+    // sandbox's own members must: they check the node's state, which only real nodes have.
+    var brandChecked = function (holderName) {
+      var holder = globalThis[holderName] && globalThis[holderName].prototype;
+      if (!holder) return;
+      Object.getOwnPropertyNames(holder).forEach(function (name) {
+        if (name === "constructor") return;
+        var descriptor = Object.getOwnPropertyDescriptor(holder, name);
+        if (!descriptor || !descriptor.configurable) return;
+        if (typeof descriptor.value === "function") {
+          var method = descriptor.value;
+          var checked = function () {
+            if (!stateOf(this)) env.guard(holder, null, holderName + ".prototype." + name);
+            return method.apply(this, arguments);
+          };
+          Object.defineProperty(checked, "length", { value: method.length, configurable: true });
+          patch(holder, name, checked);
+        } else if (descriptor.get) {
+          var getter = descriptor.get;
+          var setter = descriptor.set;
+          try {
+            Object.defineProperty(holder, name, {
+              get: asNative(function () {
+                if (!stateOf(this)) env.guard(holder, null, holderName + ".prototype." + name);
+                return getter.call(this);
+              }, "get " + name),
+              set: setter ? asNative(function (value) {
+                if (!stateOf(this)) env.guard(holder, null, holderName + ".prototype." + name);
+                return setter.call(this, value);
+              }, "set " + name) : undefined,
+              enumerable: descriptor.enumerable,
+              configurable: true,
+            });
+          } catch (error) {}
+        }
+      });
+    };
+
+    ["Node", "Element", "CharacterData", "Text", "DocumentFragment", "ShadowRoot", "Document", "HTMLElement", "Attr", "DocumentType"].forEach(brandChecked);
+
+    env.ownerOf = ownerOf;
+    env.isHTMLDocument = isHTMLDoc;
+  })();
+
+  // What the platform modules after this one (streams, messaging, elements, platform) build on.
+  env.patch = patch;
+  env.patchGetter = patchGetter;
+  env.asNative = asNative;
+  env.installShell = installShell;
+  env.utf8Decode = utf8Decode;
+  env.protoOf = protoOf;
+  env.traits = traits;
+  env.refuseUncloneable = refuseUncloneable;
+
+  // The window's own self-references as Chrome's: `window` and `top` unforgeable getters, `self`,
+  // `frames` and `parent` replaceable accessors, `document` and `location` unforgeable, and the
+  // document's own unforgeable `location`. Run once every module has put its objects in place.
+  env.finishWindow = function () {
+    var values = {};
+    ["window", "self", "frames", "top", "parent"].forEach(function (key) { values[key] = globalThis[key]; });
+
+    var getter = function (key) { return asNative(function () { return values[key]; }, "get " + key); };
+    var replaceable = function (key) {
+      return asNative(function (value) {
+        Object.defineProperty(globalThis, key, { value: value, writable: true, enumerable: true, configurable: true });
+      }, "set " + key);
+    };
+
+    try {
+      Object.defineProperty(globalThis, "window", { get: getter("window"), set: undefined, enumerable: true, configurable: false });
+      Object.defineProperty(globalThis, "top", { get: getter("top"), set: undefined, enumerable: true, configurable: false });
+      ["self", "frames", "parent"].forEach(function (key) {
+        Object.defineProperty(globalThis, key, { get: getter(key), set: replaceable(key), enumerable: true, configurable: true });
+      });
+    } catch (error) {}
+
+    ["document", "location"].forEach(function (key) {
+      try {
+        var held = Object.getOwnPropertyDescriptor(globalThis, key);
+        if (held && held.configurable) Object.defineProperty(globalThis, key, { get: held.get, set: held.set, enumerable: held.enumerable, configurable: false });
+      } catch (error) {}
+    });
+
+    try {
+      var doc = globalThis.document;
+      if (doc && !Object.getOwnPropertyDescriptor(doc, "location")) {
+        Object.defineProperty(doc, "location", {
+          get: asNative(function () { return globalThis.location; }, "get location"),
+          set: asNative(function (value) { globalThis.location.href = value; }, "set location"),
+          enumerable: true,
+          configurable: false,
+        });
+      }
+    } catch (error) {}
+  };
 })();
